@@ -83,63 +83,62 @@ The result is a system that can stream tokens like a chat app, but also act like
 
 ```text
 project-root/
-|-- aria.py
-|-- aria.cmd
-|-- config.json
-|-- pyproject.toml
-|-- requirements.txt
-|-- README.md
-|
-`-- aria/
-    |-- __init__.py
-    |-- app/
-    |   |-- __init__.py
-    |   |-- lifecycle.py
-    |   `-- main.py
-    |-- agent/
-    |   |-- __init__.py
-    |   |-- agent.py
-    |   |-- memory.py
-    |   `-- planner.py
-    |-- assets/
-    |   `-- banner.png
-    |-- core/
-    |   |-- __init__.py
-    |   |-- config.py
-    |   |-- constants.py
-    |   |-- paths.py
-    |   `-- runtime.py
-    |-- integrations/
-    |   |-- __init__.py
-    |   |-- github.py
-    |   `-- web_search.py
-    |-- llm/
-    |   |-- __init__.py
-    |   |-- base.py
-    |   |-- cloud.py
-    |   |-- local.py
-    |   |-- rate_limit.py
-    |   `-- stream.py
-    |-- tools/
-    |   |-- __init__.py
-    |   |-- executor.py
-    |   |-- parser.py
-    |   `-- registry.py
-    |-- ui/
-    |   |-- __init__.py
-    |   |-- app.py
-    |   |-- rendering.py
-    |   `-- widgets/
-    |       |-- __init__.py
-    |       |-- ai_response.py
-    |       |-- banner.py
-    |       |-- chat_input.py
-    |       `-- think_block.py
-    `-- utils/
-        |-- __init__.py
-        |-- system.py
-        |-- text.py
-        `-- time.py
+├── aria.py
+├── aria.cmd
+├── config.json
+├── pyproject.toml
+├── requirements.txt
+├── README.md
+└── aria/
+    ├── __init__.py
+    ├── app/
+    │   ├── __init__.py
+    │   ├── lifecycle.py
+    │   └── main.py
+    ├── agent/
+    │   ├── __init__.py
+    │   ├── agent.py
+    │   ├── memory.py
+    │   └── planner.py
+    ├── assets/
+    │   └── banner.png
+    ├── core/
+    │   ├── __init__.py
+    │   ├── config.py
+    │   ├── constants.py
+    │   ├── paths.py
+    │   └── runtime.py
+    ├── integrations/
+    │   ├── __init__.py
+    │   ├── github.py
+    │   └── web_search.py
+    ├── llm/
+    │   ├── __init__.py
+    │   ├── base.py
+    │   ├── cloud.py
+    │   ├── local.py
+    │   ├── rate_limit.py
+    │   └── stream.py
+    ├── tools/
+    │   ├── __init__.py
+    │   ├── executor.py
+    │   ├── parser.py
+    │   └── registry.py
+    ├── ui/
+    │   ├── __init__.py
+    │   ├── app.py
+    │   ├── rendering.py
+    │   └── widgets/
+    │       ├── __init__.py
+    │       ├── ai_response.py
+    │       ├── banner.py
+    │       ├── chat_input.py
+    │       └── think_block.py
+    └── utils/
+        ├── __init__.py
+        ├── system.py
+        ├── text.py
+        └── time.py
 ```
 
 ## Module Responsibilities
