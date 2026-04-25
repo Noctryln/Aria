@@ -44,6 +44,8 @@ class AriaGithubMixin:
                 if "access_token" in t_data:
                     token = t_data["access_token"]
                     self.config["github_oauth_token"] = token
+                    if "refresh_token" in t_data:
+                        self.config["github_refresh_token"] = t_data["refresh_token"]
                     save_config(self.config)
                     
                     try:
