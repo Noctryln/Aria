@@ -5,6 +5,8 @@ from rich.console import Group
 from rich.markup import escape as rich_escape
 from rich.table import Table
 from rich.text import Text
+from rich.segment import Segment
+from rich.measure import Measurement
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
@@ -15,6 +17,30 @@ from aria.utils.text import LIST_BULLET_PATTERN, LIST_NUM_PATTERN, SYSTEM_OBSERV
 class AriaApp:
     USER_STREAM_INTERVAL = 0.02
 
+class AriaQuoteBlock:
+    """Custom renderable untuk Blockquote tanpa border atas/bawah."""
+    def __init__(self, renderable):
+        self.renderable = renderable
+
+    def __rich_measure__(self, console, options):
+        measure = Measurement.get(console, options, self.renderable)
+        return Measurement(measure.minimum + 2, measure.maximum + 2)
+
+    def __rich_console__(self, console, options):
+        width = (options.max_width - 2) if options.max_width else 80
+        new_options = options.update(width=width)
+        lines = console.render_lines(self.renderable, new_options, pad=False)
+        
+        bar_style = console.get_style("#7b6b9a")
+        bar = Segment("┃ ", bar_style)
+        nl = Segment("\n")
+        
+        for i, line in enumerate(lines):
+            yield bar
+            yield from line
+            if i < len(lines) - 1:
+                yield nl
+                
 class AIResponse(Horizontal):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -331,16 +357,22 @@ class AIResponse(Horizontal):
                 if tag.lower() == "write":
                     body_content = re.sub(r'^```[a-zA-Z0-9]*\n', '', inner)
                     body_content = re.sub(r'\n```$', '', body_content)
-                    if body_content.strip(): body = f"\n{body_content}"
+                    if body_content.strip(): body = f"\n{rich_escape(body_content.strip())}"
                 elif tag.lower() == "edit":
                     edit_m = re.search(r'<search>\n*(.*?)\n*</search>\s*<replace>\n*(.*?)\n*</replace>', inner, re.DOTALL | re.IGNORECASE)
                     if edit_m:
-                        body = f"\n\n[SEARCH]\n{edit_m.group(1).strip()}\n\n[REPLACE]\n{edit_m.group(2).strip()}"
+                        body = f"\n\n[SEARCH]\n{rich_escape(edit_m.group(1).strip())}\n\n[REPLACE]\n{rich_escape(edit_m.group(2).strip())}"
                     else:
-                        body = f"\n\n{inner.strip()}" if inner.strip() else ""
+                        body = f"\n\n{rich_escape(inner.strip())}" if inner.strip() else ""
                 elif tag.lower() in ("run_cmd", "runcmd") and inner.strip():
-                    body = f"\n{inner.strip()}"
-                
+                    body = f"\n{rich_escape(inner.strip())}"
+                elif tag.lower() in ("github_file", "github_issue", "github_pr") and inner.strip():
+                    body_content = inner
+                    if tag.lower() == "github_file":
+                        body_content = re.sub(r'^```[a-zA-Z0-9]*\n', '', body_content)
+                        body_content = re.sub(r'\n```$', '', body_content)
+                    if body_content.strip(): body = f"\n\n{rich_escape(body_content.strip())}"
+
                 segments.append(("tool", f"{tool_title(tag, attrs, inner)}{body}", ""))
 
         if current_text:
@@ -472,81 +504,152 @@ class AIResponse(Horizontal):
             if kind == "code" and language: widget.update(f"[{rich_escape(language)}]\n{clean_content}")
             elif kind == "obs": widget.update(clean_content) # Markup hasil tool
             elif kind == "notif": widget.update(clean_content)
-            elif kind in ("code", "tool"): widget.update(clean_content)
+            elif kind == "tool":
+                try:
+                    widget.update(Text.from_markup(clean_content))
+                except Exception:
+                    # Fallback if markup fails (e.g. streaming partial tags)
+                    widget.update(rich_escape(clean_content))
+            elif kind == "code": widget.update(clean_content)
             else:
                 if not clean_content.strip() and clean_content != "\n":
                     widget.display = False
                     continue
-                lines = clean_content.split("\n"); renderables = []; prev_was_list = False
-                i = 0
+                lines = clean_content.split("\n")
+                renderables = []
+                i = 0; prev_was_list = False; prev_was_continuation = False; prev_was_quote = False
+                last_list_marker_width = 0
+                last_list_type = None
+
                 while i < len(lines):
-                    line = lines[i]
-                    stripped = line.strip()
+                    line = lines[i]; stripped = line.strip()
+                    
+                    # 1. Tabel Markdown
                     if not is_error:
                         table_block = self._extract_markdown_table(lines, i)
                         if table_block is not None:
                             header, alignments, rows, next_index = table_block
                             renderables.append(self._render_markdown_table(header, alignments, rows))
-                            prev_was_list = False
+                            prev_was_list = False; prev_was_continuation = False; prev_was_quote = False
                             if next_index < len(lines) and lines[next_index].strip() != "":
-                                renderables.append("")
-                            i = next_index
-                            continue
+                                renderables.append(Text(""))
+                            i = next_index; continue
+
+                    if stripped == "":
+                        skip_gap = False
+                        if i < len(lines) - 1:
+                            next_line = lines[i+1].strip()
+                            m_next_num = LIST_NUM_PATTERN.match(next_line)
+                            m_next_bullet = LIST_BULLET_PATTERN.match(next_line)
+                            
+                            # Abaikan gap antar bullet point
+                            if (prev_was_list or prev_was_continuation) and last_list_type == "bullet" and bool(m_next_bullet):
+                                skip_gap = True
+
+                        if not skip_gap:
+                            renderables.append(Text(""))
+                            
+                        prev_was_list = False; prev_was_continuation = False; prev_was_quote = False
+                        last_list_marker_width = 0; last_list_type = None
+                        i += 1; continue
+
+                    header_match = re.match(r'^(\s{0,3})(#{1,6})\s+(.*)', line)
                     m_num = LIST_NUM_PATTERN.match(stripped)
                     m_bullet = LIST_BULLET_PATTERN.match(stripped)
-                    is_list_item = bool(m_num) or bool(m_bullet)
+                    is_list_item = (bool(m_num) or bool(m_bullet)) and not header_match
+                    is_quote_line = line.lstrip().startswith("> ")
                     
-                    if stripped == "" and prev_was_list:
-                        next_stripped = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                        if bool(LIST_NUM_PATTERN.match(next_stripped)) or bool(LIST_BULLET_PATTERN.match(next_stripped)):
-                            prev_was_list = False; continue  
-                        else: renderables.append(""); prev_was_list = False; continue
+                    is_forced_continuation = False
+                    if not is_list_item and not header_match and not is_quote_line and (prev_was_list or prev_was_continuation):
+                        is_forced_continuation = True
+                    
+                    is_forced_quote = False
+                    if not is_list_item and not header_match and not is_quote_line and prev_was_quote and not is_forced_continuation:
+                        is_forced_quote = True
 
                     if is_error:
                         renderables.append(Text(line, style="#f472b6"))
-                    else:
-                        header_match = re.match(r'^(\s{0,3})(#{1,6})\s+(.*)', line)
-                        if header_match:
-                            spaces, hashes, content = header_match.groups()
-                            level = len(hashes)
-                            rich_content = self._inline_to_rich(content)
-                            if level == 1: renderables.append(Text.from_markup(f"{spaces}[bold underline]{rich_content}[/bold underline]"))
-                            elif level == 2: renderables.append(Text.from_markup(f"{spaces}[bold underline]{rich_content}[/bold underline]"))
-                            elif level >= 3: renderables.append(Text.from_markup(f"{spaces}[bold]{rich_content}[/bold]"))
-                        elif line.lstrip().startswith("> "):
-                            indent_str = line[:len(line) - len(line.lstrip())]
-                            content = line.lstrip()[2:]
-                            grid = Table.grid(padding=(0, 1))
-                            grid.add_column()
-                            grid.add_column()
-                            grid.add_row(Text(indent_str + "┃", style="#7b6b9a"), Text.from_markup(f"[italic]{self._inline_to_rich(content)}[/italic]", style="#7b6b9a"))
-                            renderables.append(grid)
-                        elif is_list_item:
-                            indent_len = len(line) - len(line.lstrip())
-                            m = m_num or m_bullet
-                            marker_raw = m.group(0)
-                            marker_text = "•" if m_bullet else marker_raw.strip()
-                            content_text = line[line.find(marker_raw) + len(marker_raw):].lstrip()
+                    elif header_match:
+                        spaces, hashes, content = header_match.groups()
+                        level = len(hashes); rich_content = self._inline_to_rich(content)
+                        if level <= 2: renderables.append(Text.from_markup(f"{spaces}[bold underline]{rich_content}[/bold underline]"))
+                        else: renderables.append(Text.from_markup(f"{spaces}[bold]{rich_content}[/bold]"))
+                        prev_was_list = False; prev_was_continuation = False; prev_was_quote = False; last_list_type = None
+                    elif is_quote_line or is_forced_quote:
+                        quote_block = []
+                        j = i
+                        while j < len(lines):
+                            curr_l = lines[j]; curr_s = curr_l.strip()
+                            curr_is_q = curr_l.lstrip().startswith("> ")
                             
-                            grid = Table.grid(padding=(0, 1))
-                            grid.add_column(width=4 + indent_len, justify="right")
-                            grid.add_column()
-                            grid.add_row(Text(marker_text, style="#c6bbd8"), Text.from_markup(self._inline_to_rich(content_text)))
-                            renderables.append(grid)
-                        elif line.startswith(" ") and stripped != "":
-                            indent_len = len(line) - len(line.lstrip())
-                            grid = Table.grid(padding=(0, 1))
-                            grid.add_column(width=4 + (indent_len if indent_len > 2 else indent_len))
-                            grid.add_column()
-                            grid.add_row("", Text.from_markup(self._inline_to_rich(line.lstrip())))
-                            renderables.append(grid)
-                        else: 
-                            renderables.append(Text.from_markup(self._inline_to_rich(line)))
+                            belongs_to_quote = False
+                            if j == i:
+                                belongs_to_quote = True
+                            else:
+                                if curr_is_q:
+                                    belongs_to_quote = True
+                                elif curr_s != "":
+                                    # Teruskan hisap baris yang masih menempel
+                                    h_m = re.match(r'^(\s{0,3})(#{1,6})\s+(.*)', curr_l)
+                                    m_n = LIST_NUM_PATTERN.match(curr_s); m_b = LIST_BULLET_PATTERN.match(curr_s)
+                                    if not ((bool(m_n) or bool(m_b)) and not h_m) and not h_m:
+                                        belongs_to_quote = True
+                            
+                            if belongs_to_quote:
+                                content = curr_l.lstrip()[2:] if curr_is_q else curr_l.lstrip()
+                                quote_block.append(self._inline_to_rich(content))
+                                j += 1
+                            else:
+                                break
 
-                    if is_list_item:
-                        next_stripped = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                        if not (bool(LIST_NUM_PATTERN.match(next_stripped)) or bool(LIST_BULLET_PATTERN.match(next_stripped))) and next_stripped != "":
-                            renderables.append("")  
-                    prev_was_list = is_list_item
+                        if quote_block:
+                            quote_text = Text.from_markup("\n".join(quote_block), style="#7b6b9a italic")
+                            renderables.append(AriaQuoteBlock(quote_text))
+                        
+                        i = j - 1
+                        
+                        prev_was_quote = True; prev_was_list = False; prev_was_continuation = False; last_list_marker_width = 0; last_list_type = None
+                    elif is_list_item:
+                        current_list_type = "bullet" if m_bullet else "num"
+                        
+                        needs_forced_gap = False
+                        if prev_was_continuation:
+                            if not (last_list_type == "bullet" and current_list_type == "bullet"):
+                                needs_forced_gap = True
+                        elif prev_was_list and current_list_type == "num":
+                            needs_forced_gap = True
+                            
+                        if needs_forced_gap: 
+                            renderables.append(Text("")) 
+                            
+                        last_list_type = current_list_type
+                        
+                        indent_len = len(line) - len(line.lstrip())
+                        m = m_num or m_bullet
+                        marker_raw = m.group(0); marker_text = "•" if m_bullet else marker_raw.strip()
+                        content_text = line[line.find(marker_raw) + len(marker_raw):].lstrip()
+                        marker_width = indent_len + (2 if m_bullet else 4)
+                        last_list_marker_width = marker_width
+                        grid = Table.grid(padding=(0, 1))
+                        grid.add_column(width=marker_width, justify="right"); grid.add_column()
+                        grid.add_row(Text(marker_text, style="#c6bbd8"), Text.from_markup(self._inline_to_rich(content_text)))
+                        renderables.append(grid)
+                        prev_was_list = True; is_continuation = False; prev_was_quote = False; prev_was_continuation = False
+                    elif (line.startswith(" ") or is_forced_continuation) and stripped != "":
+                        indent_len = len(line) - len(line.lstrip())
+                        width = last_list_marker_width if (is_forced_continuation and not line.startswith(" ")) else max(last_list_marker_width, indent_len)
+                        grid = Table.grid(padding=(0, 1))
+                        grid.add_column(width=width); grid.add_column()
+                        grid.add_row("", Text.from_markup(self._inline_to_rich(line.lstrip())))
+                        renderables.append(grid)
+                        prev_was_continuation = True; is_list_item = False; prev_was_quote = False; prev_was_list = False
+                    else: 
+                        if (prev_was_list or prev_was_continuation or prev_was_quote) and stripped != "":
+                            renderables.append(Text(""))
+                        
+                        renderables.append(Text.from_markup(self._inline_to_rich(line)))
+                        prev_was_list = False; prev_was_continuation = False; prev_was_quote = False
+                        last_list_marker_width = 0; last_list_type = None
+
                     i += 1
                 widget.update(Group(*renderables))
