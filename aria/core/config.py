@@ -11,7 +11,9 @@ DEFAULT_CONFIG = {
     "cloud_model": "gemma-4-26b-a4b-it",
     "serpapi_key": "",
     "github_oauth_token": "",
+    "github_refresh_token": "",
     "github_client_id": "",
+    "github_client_secret": "",
 }
 
 def load_config() -> dict:
@@ -22,8 +24,12 @@ def load_config() -> dict:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 config.update({k: v for k, v in loaded.items() if k in DEFAULT_CONFIG})
-        except Exception:
-            pass
+        except Exception as e:
+            import sys
+            print(f"WARNING: Gagal membaca config.json karena error ({e}). File config.json kamu mungkin memiliki format yang salah (misalnya kurang tanda kutip atau koma). Config tidak akan di-overwrite untuk mencegah kehilangan data.", file=sys.stderr)
+            return config
+            
+    # Auto-fill missing keys and save if no error
     save_config(config)
     return config
 
