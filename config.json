@@ -1,0 +1,10 @@
+{
+  "backend": "cloud",
+  "local_model_path": "",
+  "lora_adapter_path": "",
+  "google_api_key": "",
+  "cloud_model": "gemma-4-26b-a4b-it",
+  "serpapi_key": "",
+  "github_oauth_token": "",
+  "github_client_id": ""
+}

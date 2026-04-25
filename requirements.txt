@@ -1,0 +1,11 @@
+SpeechRecognition
+textual
+rich
+llama-cpp-python
+google-genai
+requests
+PyGithub
+Pillow
+PyYAML
+tika
+PyAudio
