@@ -739,6 +739,14 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             add_notif(f"[bold]GitHub:[/bold] Creating issue in [#d1a662]{repo_str}[/#d1a662]")
                             new_issue = repo.create_issue(title=title, body=body)
                             tool_outputs.append(f"[GITHUB_ISSUE create] -> Berhasil membuat issue #{new_issue.number}: {new_issue.html_url}")
+                        elif action == "get":
+                            num = int(num_match.group(1)) if num_match else None
+                            if not num: raise ValueError("Atribut 'number' wajib.")
+                            add_notif(f"[bold]GitHub:[/bold] Fetching issue [#d1a662]#{num}[/#d1a662]")
+                            iss = repo.get_issue(num)
+                            comments = [f"- {c.user.login}: {c.body[:200]}..." for c in iss.get_comments()]
+                            c_str = "\n".join(comments) if comments else "Tidak ada komentar."
+                            tool_outputs.append(f"[GITHUB_ISSUE get #{num}] ->\nTitle: {iss.title}\nState: {iss.state}\nBody:\n{iss.body}\n\nComments:\n{c_str}")
                         elif action == "comment":
                             num = int(num_match.group(1)) if num_match else None
                             if not num: raise ValueError("Atribut 'number' wajib.")
@@ -762,13 +770,44 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             iss.edit(state="closed")
                             tool_outputs.append(f"[GITHUB_ISSUE close] -> Issue #{num} berhasil ditutup.")
                     except Exception as e:
-                        tool_outputs.append(f"[GITHUB_ISSUE] -> Error: {e}")
+                        err_msg = str(e)
+                        if "401" in err_msg or "Bad credentials" in err_msg: 
+                            from aria.core.config import save_config
+                            import requests
+                            client_id = self.config.get("github_client_id")
+                            client_secret = self.config.get("github_client_secret")
+                            refresh_token = self.config.get("github_refresh_token")
+                            
+                            if refresh_token and client_id and client_secret:
+                                add_notif("[italic #7b6b9a]Mencoba refresh token Github secara otomatis...[/italic #7b6b9a]")
+                                try:
+                                    t_res = requests.post("https://github.com/login/oauth/access_token",
+                                                        data={"client_id": client_id, "client_secret": client_secret, 
+                                                              "refresh_token": refresh_token, "grant_type": "refresh_token"},
+                                                        headers={"Accept": "application/json"}, timeout=15)
+                                    t_data = t_res.json()
+                                    if "access_token" in t_data:
+                                        self.config["github_oauth_token"] = t_data["access_token"]
+                                        if "refresh_token" in t_data:
+                                            self.config["github_refresh_token"] = t_data["refresh_token"]
+                                        save_config(self.config)
+                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Silakan ulangi instruksi sebelumnya."
+                                    else:
+                                        err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                                except Exception:
+                                    err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                            else:
+                                err_msg = "Token kadaluarsa. (Untuk auto-refresh, isi 'github_client_secret' di config). Ketik /github login."
+                        tool_outputs.append(f"[GITHUB_ISSUE] -> Error: {err_msg}")
                         is_success = False
 
             elif tag == 'github_pr':
                 repo_name = re.search(r'repo\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 action_match = re.search(r'action\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 num_match = re.search(r'number\s*=\s*["\'](\d+)["\']', attrs, re.IGNORECASE)
+                title_match = re.search(r'title\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+                head_match = re.search(r'head\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+                base_match = re.search(r'base\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 
                 repo_str = repo_name.group(1) if repo_name else ""
                 action = action_match.group(1).lower() if action_match else "list"
@@ -792,6 +831,22 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             for pr in pulls[:10]:
                                 lines.append(f"#{pr.number}: {pr.title} ({pr.head.ref} -> {pr.base.ref})")
                             tool_outputs.append("\n".join(lines) if len(lines) > 1 else "Tidak ada PR terbuka.")
+                        elif action == "create":
+                            title = title_match.group(1) if title_match else "New Pull Request"
+                            head = head_match.group(1) if head_match else ""
+                            base = base_match.group(1) if base_match else "main"
+                            if not head: raise ValueError("Atribut 'head' wajib untuk create PR.")
+                            add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Creating PR in [#d1a662]{repo_str}[/#d1a662] ({head} -> {base})")
+                            pr = repo.create_pull(title=title, body=inner.strip(), head=head, base=base)
+                            tool_outputs.append(f"[GITHUB_PR create] -> Berhasil membuat PR #{pr.number}: {pr.html_url}")
+                        elif action == "get":
+                            num = int(num_match.group(1)) if num_match else None
+                            if not num: raise ValueError("Atribut 'number' wajib.")
+                            add_notif(f"[bold]GitHub:[/bold] Fetching PR [#d1a662]#{num}[/#d1a662]")
+                            pr = repo.get_pull(num)
+                            comments = [f"- {c.user.login}: {c.body[:200]}..." for c in pr.get_issue_comments()]
+                            c_str = "\n".join(comments) if comments else "Tidak ada komentar."
+                            tool_outputs.append(f"[GITHUB_PR get #{num}] ->\nTitle: {pr.title}\nState: {pr.state}\nMergeable: {pr.mergeable}\nBody:\n{pr.body}\n\nComments:\n{c_str}")
                         elif action == "get_diff":
                             num = int(num_match.group(1)) if num_match else None
                             if not num: raise ValueError("Atribut 'number' wajib.")
@@ -830,13 +885,43 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             pr.edit(state="closed")
                             tool_outputs.append(f"[GITHUB_PR close] -> PR #{num} ditutup.")
                     except Exception as e:
-                        tool_outputs.append(f"[GITHUB_PR] -> Error: {e}")
+                        err_msg = str(e)
+                        if "401" in err_msg or "Bad credentials" in err_msg: 
+                            from aria.core.config import save_config
+                            import requests
+                            client_id = self.config.get("github_client_id")
+                            client_secret = self.config.get("github_client_secret")
+                            refresh_token = self.config.get("github_refresh_token")
+                            
+                            if refresh_token and client_id and client_secret:
+                                add_notif("[italic #7b6b9a]Mencoba refresh token Github secara otomatis...[/italic #7b6b9a]")
+                                try:
+                                    t_res = requests.post("https://github.com/login/oauth/access_token",
+                                                        data={"client_id": client_id, "client_secret": client_secret, 
+                                                              "refresh_token": refresh_token, "grant_type": "refresh_token"},
+                                                        headers={"Accept": "application/json"}, timeout=15)
+                                    t_data = t_res.json()
+                                    if "access_token" in t_data:
+                                        self.config["github_oauth_token"] = t_data["access_token"]
+                                        if "refresh_token" in t_data:
+                                            self.config["github_refresh_token"] = t_data["refresh_token"]
+                                        save_config(self.config)
+                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Silakan ulangi instruksi sebelumnya."
+                                    else:
+                                        err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                                except Exception:
+                                    err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                            else:
+                                err_msg = "Token kadaluarsa. (Untuk auto-refresh, isi 'github_client_secret' di config). Ketik /github login."
+                        tool_outputs.append(f"[GITHUB_PR] -> Error: {err_msg}")
                         is_success = False
 
             elif tag == 'github_actions':
                 repo_name = re.search(r'repo\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 action_match = re.search(r'action\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 run_match = re.search(r'run_id\s*=\s*["\'](\d+)["\']', attrs, re.IGNORECASE)
+                workflow_match = re.search(r'workflow_id\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+                ref_match = re.search(r'ref\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 repo_str = repo_name.group(1) if repo_name else ""
                 action = action_match.group(1).lower() if action_match else "list_runs"
                 token = self.config.get("github_oauth_token")
@@ -862,6 +947,17 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             import requests
                             log_res = requests.get(f"https://api.github.com/repos/{repo_str}/actions/runs/{rid}/logs", headers={"Authorization": f"token {token}"}, timeout=20)
                             tool_outputs.append(f"[GITHUB_ACTIONS log {rid}] -> Log URL: https://github.com/{repo_str}/actions/runs/{rid}/logs")
+                        elif action == "trigger":
+                            workflow_id = workflow_match.group(1) if workflow_match else None
+                            ref = ref_match.group(1) if ref_match else "main"
+                            if not workflow_id: raise ValueError("workflow_id wajib.")
+                            add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Triggering workflow [#d1a662]{workflow_id}[/#d1a662] on {ref}")
+                            workflow = repo.get_workflow(workflow_id)
+                            success = workflow.create_dispatch(ref)
+                            if success:
+                                tool_outputs.append(f"[GITHUB_ACTIONS trigger] -> Berhasil memicu workflow {workflow_id} pada branch {ref}.")
+                            else:
+                                tool_outputs.append(f"[GITHUB_ACTIONS trigger] -> Gagal memicu workflow {workflow_id}.")
                     except Exception as e:
                         tool_outputs.append(f"[GITHUB_ACTIONS] -> Error: {e}")
                         is_success = False
@@ -885,8 +981,9 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                         g = Github(token)
                         if action == "list":
                             add_notif(f"[bold]GitHub:[/bold] Fetching repository list...")
-                            repos = g.get_user().get_repos()
-                            lines = ["[GITHUB_REPO list] ->"]
+                            user = g.get_user()
+                            repos = user.get_repos()
+                            lines = [f"[GITHUB_REPO list] -> Terhubung sebagai: {user.login}"]
                             for r in repos[:15]:
                                 lines.append(f"- {r.full_name} ({r.stargazers_count} stars)")
                             tool_outputs.append("\n".join(lines))
@@ -904,6 +1001,23 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             repo = g.get_repo(repo_str)
                             info = f"Repo: {repo.full_name}\nDesc: {repo.description}\nStars: {repo.stargazers_count} | Forks: {repo.forks_count}\nLang: {repo.language}"
                             tool_outputs.append(f"[GITHUB_REPO info] ->\n{info}")
+                        elif action == "list_branches":
+                            add_notif(f"[bold]GitHub:[/bold] Listing branches for [#d1a662]{repo_str}[/#d1a662]")
+                            repo = g.get_repo(repo_str)
+                            branches = repo.get_branches()
+                            lines = [f"[GITHUB_REPO list_branches {repo_str}] ->"]
+                            for b in branches[:30]:
+                                lines.append(f"- {b.name}")
+                            tool_outputs.append("\n".join(lines))
+                        elif action == "list_commits":
+                            b_name = branch_match.group(1) if branch_match else "main"
+                            add_notif(f"[bold]GitHub:[/bold] Fetching commits for [#d1a662]{repo_str}[/#d1a662] on branch {b_name}")
+                            repo = g.get_repo(repo_str)
+                            commits = repo.get_commits(sha=b_name)
+                            lines = [f"[GITHUB_REPO list_commits {repo_str} ({b_name})] ->"]
+                            for c in list(commits)[:15]:
+                                lines.append(f"- {c.sha[:7]}: {c.commit.message.splitlines()[0]} ({c.commit.author.name})")
+                            tool_outputs.append("\n".join(lines))
                         elif action == "create_branch":
                             b_name = branch_match.group(1) if branch_match else ""
                             base_name = base_match.group(1) if base_match else "main"
@@ -913,13 +1027,49 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             source = repo.get_branch(base_name)
                             repo.create_git_ref(ref=f"refs/heads/{b_name}", sha=source.commit.sha)
                             tool_outputs.append(f"[GITHUB_REPO create_branch] -> Branch {b_name} dibuat dari {base_name}.")
+                        elif action == "delete_branch":
+                            b_name = branch_match.group(1) if branch_match else ""
+                            if not b_name: raise ValueError("Atribut 'branch' wajib untuk delete_branch.")
+                            add_notif(f"[bold #f472b6]GitHub:[/bold #f472b6] Deleting branch [#d1a662]{b_name}[/#d1a662] in {repo_str}")
+                            repo = g.get_repo(repo_str)
+                            ref = repo.get_git_ref(f"heads/{b_name}")
+                            ref.delete()
+                            tool_outputs.append(f"[GITHUB_REPO delete_branch] -> Branch {b_name} telah dihapus.")
                         elif action == "delete":
                             add_notif(f"[bold #f472b6]GitHub:[/bold #f472b6] DELETING REPOSITORY [#d1a662]{repo_str}[/#d1a662]")
                             repo = g.get_repo(repo_str)
                             repo.delete()
                             tool_outputs.append(f"[GITHUB_REPO delete] -> Repo {repo_str} telah dihapus.")
                     except Exception as e:
-                        tool_outputs.append(f"[GITHUB_REPO] -> Error: {e}")
+                        err_msg = str(e)
+                        if "401" in err_msg or "Bad credentials" in err_msg: 
+                            from aria.core.config import save_config
+                            import requests
+                            client_id = self.config.get("github_client_id")
+                            client_secret = self.config.get("github_client_secret")
+                            refresh_token = self.config.get("github_refresh_token")
+                            
+                            if refresh_token and client_id and client_secret:
+                                add_notif("[italic #7b6b9a]Mencoba refresh token Github secara otomatis...[/italic #7b6b9a]")
+                                try:
+                                    t_res = requests.post("https://github.com/login/oauth/access_token",
+                                                        data={"client_id": client_id, "client_secret": client_secret, 
+                                                              "refresh_token": refresh_token, "grant_type": "refresh_token"},
+                                                        headers={"Accept": "application/json"}, timeout=15)
+                                    t_data = t_res.json()
+                                    if "access_token" in t_data:
+                                        self.config["github_oauth_token"] = t_data["access_token"]
+                                        if "refresh_token" in t_data:
+                                            self.config["github_refresh_token"] = t_data["refresh_token"]
+                                        save_config(self.config)
+                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Silakan ulangi instruksi sebelumnya."
+                                    else:
+                                        err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                                except Exception:
+                                    err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                            else:
+                                err_msg = "Token kadaluarsa. (Untuk auto-refresh, isi 'github_client_secret' di config). Ketik /github login."
+                        tool_outputs.append(f"[GITHUB_REPO] -> Error: {err_msg}")
                         is_success = False
 
             elif tag == 'github_file':
@@ -928,13 +1078,15 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                 action_match = re.search(r'action\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 branch_match = re.search(r'branch\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
                 msg_match = re.search(r'message\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+                local_path_match = re.search(r'local_path\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
 
                 repo_str = repo_match.group(1) if repo_match else ""
                 path_str = path_match.group(1) if path_match else ""
                 action = (action_match.group(1).lower() if action_match else "read")
                 branch = (branch_match.group(1) if branch_match else "main")
                 msg = (msg_match.group(1) if msg_match else "Aria Assist Code update")
-                
+                local_path = local_path_match.group(1) if local_path_match else ""
+
                 token = self.config.get("github_oauth_token")
                 if not token:
                     tool_outputs.append("[GITHUB_FILE] -> Error: Belum login.")
@@ -948,6 +1100,15 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             add_notif(f"[bold]GitHub:[/bold] Reading cloud file [#d1a662]{path_str}[/#d1a662]")
                             content = repo.get_contents(path_str, ref=branch)
                             tool_outputs.append(f"[GITHUB_FILE read {path_str}] ->\n{content.decoded_content.decode('utf-8')}")
+                        elif action == "list_dir":
+                            add_notif(f"[bold]GitHub:[/bold] Listing cloud directory [#d1a662]{path_str}[/#d1a662]")
+                            contents = repo.get_contents(path_str, ref=branch)
+                            if not isinstance(contents, list):
+                                contents = [contents]
+                            lines = [f"[GITHUB_FILE list_dir {path_str} ({branch})] ->"]
+                            for c in contents:
+                                lines.append(f"- {c.path} ({c.type})")
+                            tool_outputs.append("\n".join(lines))
                         elif action == "write":
                             add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Committing to [#d1a662]{path_str}[/#d1a662] ([italic]{branch}[/italic])")
                             try:
@@ -957,6 +1118,47 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             except:
                                 repo.create_file(path_str, msg, inner.strip(), branch=branch)
                                 tool_outputs.append(f"[GITHUB_FILE write] -> Berhasil membuat file baru {path_str} di branch {branch}.")
+                        elif action == "push_local":
+                            if not local_path: raise ValueError("Atribut 'local_path' wajib untuk action push_local.")
+                            if not os.path.exists(local_path): raise ValueError(f"Path lokal tidak ditemukan: {local_path}")
+                            
+                            if os.path.isfile(local_path):
+                                with open(local_path, "r", encoding="utf-8") as f:
+                                    local_content = f.read()
+                                add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Pushing local file [#d1a662]{local_path}[/#d1a662] to [#d1a662]{path_str}[/#d1a662] ([italic]{branch}[/italic])")
+                                try:
+                                    contents = repo.get_contents(path_str, ref=branch)
+                                    repo.update_file(contents.path, msg, local_content, contents.sha, branch=branch)
+                                    tool_outputs.append(f"[GITHUB_FILE push_local] -> Berhasil memperbarui file {path_str}.")
+                                except:
+                                    repo.create_file(path_str, msg, local_content, branch=branch)
+                                    tool_outputs.append(f"[GITHUB_FILE push_local] -> Berhasil membuat file {path_str}.")
+                            elif os.path.isdir(local_path):
+                                add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Pushing local directory [#d1a662]{local_path}[/#d1a662] to [#d1a662]{path_str}[/#d1a662] ([italic]{branch}[/italic])")
+                                pushed_count = 0
+                                for root, _, files in os.walk(local_path):
+                                    for file in files:
+                                        # Skip common binary/hidden files to avoid encoding issues and bloat
+                                        if file.startswith('.') or file.endswith(('.png', '.jpg', '.jpeg', '.gif', '.pyc', '.exe')): continue
+                                        
+                                        file_local_path = os.path.join(root, file)
+                                        # Calculate relative path from the selected local directory
+                                        rel_path = os.path.relpath(file_local_path, local_path)
+                                        # Construct the target path on GitHub
+                                        target_path = os.path.join(path_str, rel_path).replace("\\", "/")
+                                        
+                                        try:
+                                            with open(file_local_path, "r", encoding="utf-8") as f:
+                                                content = f.read()
+                                            try:
+                                                contents = repo.get_contents(target_path, ref=branch)
+                                                repo.update_file(contents.path, msg, content, contents.sha, branch=branch)
+                                            except:
+                                                repo.create_file(target_path, msg, content, branch=branch)
+                                            pushed_count += 1
+                                        except Exception as sub_e:
+                                            tool_outputs.append(f"[GITHUB_FILE push_local] -> Warning: Gagal mengunggah {file_local_path}: {sub_e}")
+                                tool_outputs.append(f"[GITHUB_FILE push_local] -> Selesai mengunggah {pushed_count} file dari folder {local_path}.")                        
                         elif action == "delete":
                             add_notif(f"[bold #f472b6]GitHub:[/bold #f472b6] Deleting cloud file [#d1a662]{path_str}[/#d1a662]")
                             contents = repo.get_contents(path_str, ref=branch)
@@ -994,7 +1196,35 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             for c in res[:8]: lines.append(f"- {c.repository.full_name}: {c.path}")
                             tool_outputs.append("\n".join(lines))
                     except Exception as e:
-                        tool_outputs.append(f"[GITHUB_SEARCH] -> Error: {e}")
+                        err_msg = str(e)
+                        if "401" in err_msg or "Bad credentials" in err_msg: 
+                            from aria.core.config import save_config
+                            import requests
+                            client_id = self.config.get("github_client_id")
+                            client_secret = self.config.get("github_client_secret")
+                            refresh_token = self.config.get("github_refresh_token")
+
+                            if refresh_token and client_id and client_secret:
+                                add_notif("[italic #7b6b9a]Mencoba refresh token Github secara otomatis...[/italic #7b6b9a]")
+                                try:
+                                    t_res = requests.post("https://github.com/login/oauth/access_token",
+                                                        data={"client_id": client_id, "client_secret": client_secret, 
+                                                              "refresh_token": refresh_token, "grant_type": "refresh_token"},
+                                                        headers={"Accept": "application/json"}, timeout=15)
+                                    t_data = t_res.json()
+                                    if "access_token" in t_data:
+                                        self.config["github_oauth_token"] = t_data["access_token"]
+                                        if "refresh_token" in t_data:
+                                            self.config["github_refresh_token"] = t_data["refresh_token"]
+                                        save_config(self.config)
+                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Silakan ulangi instruksi sebelumnya."
+                                    else:
+                                        err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                                except Exception:
+                                    err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
+                            else:
+                                err_msg = "Token kadaluarsa. (Untuk auto-refresh, isi 'github_client_secret' di config). Ketik /github login."
+                        tool_outputs.append(f"[GITHUB_FILE] -> Error: {err_msg}")
                         is_success = False
 
             elif tag in ['run_cmd', 'runcmd']:
