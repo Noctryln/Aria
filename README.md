@@ -89,10 +89,7 @@ project-root/
 |-- pyproject.toml
 |-- requirements.txt
 |-- README.md
-|-- qc-site/
-|   |-- index.html
-|   |-- styles.css
-|   `-- app.js
+|
 `-- aria/
     |-- __init__.py
     |-- app/
@@ -314,7 +311,7 @@ venv\Scripts\python.exe .\aria.py
 | `/speech` | Start microphone capture and speech-to-text recognition. |
 | `/think` | Toggle local thinking display. Cloud mode ignores this. |
 | `/debug` | Toggle cloud debug panels and current session context visibility. |
-| `/lora <path|off>` | Attach or disable a LoRA adapter, then hot-reload local mode. |
+| `/lora <path/off>` | Attach or disable a LoRA adapter, then hot-reload local mode. |
 | `/local` | Switch to the local backend and reload. |
 | `/cloud` | Switch to the cloud backend and reload. |
 | `/github login` | Start GitHub device OAuth flow. |
@@ -488,12 +485,6 @@ GitHub support is operator-grade rather than superficial:
 - global code and repository search
 
 This enables Aria to operate directly against GitHub-hosted repos from the same TUI session.
-
-## Quality Control Site
-
-The repository includes `qc-site/`, a standalone static verification site for Aria quality control. It is designed as an operator checklist for production-style validation and covers runtime, UI, backend, tool execution, safety, stability, and integration scenarios.
-
-Open `qc-site/index.html` directly in a browser to use it.
 
 ## Production Notes
 
