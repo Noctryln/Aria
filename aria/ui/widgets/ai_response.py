@@ -263,14 +263,20 @@ class AIResponse(Horizontal):
         current_text = ""
         
         while i < n:
-            md_block_match = re.search(r'```', text[i:])
+            # Code block ``` must be at the start of a line (or after spaces) to avoid catching inline ``` 
+            md_block_match = re.search(r'(?:^|\n)[ \t]*```', text[i:])
             md_inline_match = re.search(r'`', text[i:])
             tool_match = TOOL_OPEN_PATTERN.search(text[i:])
             obs_match = SYSTEM_OBSERVATION_PATTERN.search(text[i:])
             notif_match = re.search(r'<ui_notif>\n*(.*?)\n*</ui_notif>', text[i:], re.DOTALL)
             
             candidates = []
-            if md_block_match: candidates.append((i + md_block_match.start(), "md_block", md_block_match))
+            if md_block_match: 
+                # Adjust open_idx to the actual start of ```
+                actual_start = md_block_match.start()
+                if text[i + actual_start] == '\n': actual_start += 1
+                while text[i + actual_start] in (' ', '\t'): actual_start += 1
+                candidates.append((i + actual_start, "md_block", md_block_match))
             if md_inline_match: candidates.append((i + md_inline_match.start(), "md_inline", md_inline_match))
             if tool_match: candidates.append((i + tool_match.start(), "tool", tool_match))
             if obs_match: candidates.append((i + obs_match.start(), "obs", obs_match))
@@ -283,9 +289,6 @@ class AIResponse(Horizontal):
             candidates.sort(key=lambda x: x[0])
             open_idx, kind, match = candidates[0]
             
-            if kind == "md_inline" and text[open_idx:open_idx+3] == "```":
-                kind = "md_block"
-                
             current_text += text[i:open_idx]
             
             if kind == "md_block":

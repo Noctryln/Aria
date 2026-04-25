@@ -156,6 +156,17 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                 self.call_from_thread(lambda ui=current_ui: resp_widget.update_content(ui))
                 self.call_from_thread(lambda: self.query_one("#chat-log").scroll_end(animate=False))
 
+            def update_last_notif(markup_text):
+                if current_notifs:
+                    current_notifs[-1] = markup_text
+                else:
+                    current_notifs.append(markup_text)
+                running_tag = self._decorate_tool_tags_with_status(full_tag, "running")
+                combined_notif = "\n\n".join(current_notifs)
+                current_ui = "".join(ui_pieces) + running_tag + f"<ui_notif>{combined_notif}</ui_notif>" + text[end:]
+                self.call_from_thread(lambda ui=current_ui: resp_widget.update_content(ui))
+                self.call_from_thread(lambda: self.query_one("#chat-log").scroll_end(animate=False))
+
             if tag == 'ls':
                 path = inner.strip().strip("'").strip('"') or "."
                 if not is_safe_path(path):
@@ -1135,17 +1146,31 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                                     tool_outputs.append(f"[GITHUB_FILE push_local] -> Berhasil membuat file {path_str}.")
                             elif os.path.isdir(local_path):
                                 add_notif(f"[bold #71d1d1]GitHub:[/bold #71d1d1] Pushing local directory [#d1a662]{local_path}[/#d1a662] to [#d1a662]{path_str}[/#d1a662] ([italic]{branch}[/italic])")
-                                pushed_count = 0
+                                
+                                files_to_push = []
                                 for root, _, files in os.walk(local_path):
                                     for file in files:
-                                        # Skip common binary/hidden files to avoid encoding issues and bloat
-                                        if file.startswith('.') or file.endswith(('.png', '.jpg', '.jpeg', '.gif', '.pyc', '.exe')): continue
-                                        
-                                        file_local_path = os.path.join(root, file)
-                                        # Calculate relative path from the selected local directory
+                                        if file.startswith('.') or file.endswith(('.png', '.jpg', '.jpeg', '.gif', '.pyc', '.exe', '.zip', '.tar', '.gz')): continue
+                                        files_to_push.append(os.path.join(root, file))
+                                
+                                total_files = len(files_to_push)
+                                if total_files == 0:
+                                    tool_outputs.append(f"[GITHUB_FILE push_local] -> Warning: Tidak ada file valid yang bisa diunggah di folder {local_path}.")
+                                else:
+                                    add_notif(f"Menghitung {total_files} file...")
+                                    pushed_count = 0
+                                    
+                                    for i, file_local_path in enumerate(files_to_push):
                                         rel_path = os.path.relpath(file_local_path, local_path)
-                                        # Construct the target path on GitHub
                                         target_path = os.path.join(path_str, rel_path).replace("\\", "/")
+                                        
+                                        # Render Progress Bar (Seamless Slim Line)
+                                        p_val = (i + 1) / total_files
+                                        perc = int(p_val * 100)
+                                        bar_len = 30
+                                        filled = int(p_val * bar_len)
+                                        bar = f"[#d1a662]{'━' * filled}[/#d1a662][#3d2d5a]{'─' * (bar_len - filled)}[/#3d2d5a]"
+                                        update_last_notif(f"[bold #87c095]{i+1}/{total_files}[/bold #87c095] {bar} [bold #87c095]{perc}%[/bold #87c095]\n[#7b6b9a]Uploading: {target_path}[/#7b6b9a]")
                                         
                                         try:
                                             with open(file_local_path, "r", encoding="utf-8") as f:
@@ -1158,7 +1183,10 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                                             pushed_count += 1
                                         except Exception as sub_e:
                                             tool_outputs.append(f"[GITHUB_FILE push_local] -> Warning: Gagal mengunggah {file_local_path}: {sub_e}")
-                                tool_outputs.append(f"[GITHUB_FILE push_local] -> Selesai mengunggah {pushed_count} file dari folder {local_path}.")                        
+                                            
+                                    final_bar = f"[#d1a662]{'━' * 30}[/#d1a662]"
+                                    update_last_notif(f"[bold #87c095]{total_files}/{total_files}[/bold #87c095] {final_bar} [bold #87c095]100%[/bold #87c095]\n[#7b6b9a]Selesai mengunggah {pushed_count} file.[/#7b6b9a]")
+                                    tool_outputs.append(f"[GITHUB_FILE push_local] -> Selesai mengunggah {pushed_count} file dari folder {local_path}.")                        
                         elif action == "delete":
                             add_notif(f"[bold #f472b6]GitHub:[/bold #f472b6] Deleting cloud file [#d1a662]{path_str}[/#d1a662]")
                             contents = repo.get_contents(path_str, ref=branch)

@@ -130,16 +130,23 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         blocks = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
         frac_idx = int(fraction * 8)
         
-        bar_str = "█" * full_blocks
-        if full_blocks < bar_len:
-            bar_str += blocks[frac_idx]
-            bar_str += " " * (bar_len - full_blocks - 1)
-            
-        bar_str = f"[{bar_str}]"
+        if rem_pct > 50: fg_color = "#71d1d1"
+        elif rem_pct > 20: fg_color = "#d1a662"
+        else: fg_color = "#f472b6"
         
-        if rem_pct > 50: color = "#71d1d1"
-        elif rem_pct > 20: color = "#d1a662"
-        else: color = "#f472b6"
+        bg_color = "#2a2a2a" 
+        
+        bar_text = Text()
+        bar_text.append("[", style="#7b6b9a") # Bracket kiri
+        
+        bar_text.append("█" * full_blocks, style=f"{fg_color} on {bg_color}")
+        
+        if full_blocks < bar_len:
+            bar_text.append(blocks[frac_idx], style=f"{fg_color} on {bg_color}")
+            empty_count = bar_len - full_blocks - 1
+            bar_text.append(" " * empty_count, style=f"{fg_color} on {bg_color}")
+
+        bar_text.append("] ", style="#7b6b9a") # Bracket kanan
         
         grid = Table.grid(expand=True)
         grid.add_column(justify="left"); grid.add_column(justify="right")
@@ -148,8 +155,8 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         lt.append("Dir: ", style="#7b6b9a"); lt.append(f"{LAUNCH_DIR}  ", style="#d1a662")
         
         rt.append("Context: ", style="#7b6b9a")
-        rt.append(f"{bar_str} ", style=color)
-        rt.append(f"{rem_pct}%", style=color)
+        rt.append(bar_text) 
+        rt.append(f"{rem_pct}%", style=fg_color)
         
         grid.add_row(lt, rt); self.query_one("#status-bar").update(grid)
 
