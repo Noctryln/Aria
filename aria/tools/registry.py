@@ -9,15 +9,18 @@ class AriaToolRegistryMixin:
         i = 0
         n = len(text)
         
+        md_block_re = re.compile(r'```')
+        md_inline_re = re.compile(r'`')
+        
         while i < n:
-            md_block_match = re.search(r'```', text[i:])
-            md_inline_match = re.search(r'`', text[i:])
-            tool_match = TOOL_OPEN_PATTERN.search(text[i:])
+            md_block_match = md_block_re.search(text, i)
+            md_inline_match = md_inline_re.search(text, i)
+            tool_match = TOOL_OPEN_PATTERN.search(text, i)
             
             candidates = []
-            if md_block_match: candidates.append((i + md_block_match.start(), "md_block", md_block_match))
-            if md_inline_match: candidates.append((i + md_inline_match.start(), "md_inline", md_inline_match))
-            if tool_match: candidates.append((i + tool_match.start(), "tool", tool_match))
+            if md_block_match: candidates.append((md_block_match.start(), "md_block", md_block_match))
+            if md_inline_match: candidates.append((md_inline_match.start(), "md_inline", md_inline_match))
+            if tool_match: candidates.append((tool_match.start(), "tool", tool_match))
             
             if not candidates:
                 break
@@ -51,11 +54,11 @@ class AriaToolRegistryMixin:
                 attrs = match.group("attrs") or ""
                 after_open = open_idx + len(match.group(0))
                 
-                close_match = re.search(rf'</{re.escape(tag)}>', text[after_open:], flags=re.IGNORECASE)
+                close_match = re.compile(rf'</{re.escape(tag)}>', flags=re.IGNORECASE).search(text, after_open)
                 if close_match:
-                    inner_end = after_open + close_match.start()
+                    inner_end = close_match.start()
                     inner = text[after_open:inner_end]
-                    full_match_text = text[open_idx:after_open + close_match.end()]
+                    full_match_text = text[open_idx:close_match.end()]
                     
                     tools.append({
                         "tag": tag,
@@ -63,9 +66,9 @@ class AriaToolRegistryMixin:
                         "inner": inner,
                         "full": full_match_text,
                         "start": open_idx,
-                        "end": after_open + close_match.end()
+                        "end": close_match.end()
                     })
-                    i = after_open + close_match.end()
+                    i = close_match.end()
                 else:
                     i = open_idx + len(match.group(0))
                     
