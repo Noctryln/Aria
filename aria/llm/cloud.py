@@ -22,18 +22,28 @@ class LLMChatCloudMixin:
             except Exception:
                 pass
 
-    def _create_cloud_chat(self, system_prompt: str, label: str = "cloud-session"):
+    def _create_cloud_chat(self, system_prompt: str, label: str = "cloud-session", history_data: list = None):
         config = self._genai_types.GenerateContentConfig(
             system_instruction=system_prompt or None,
             thinking_config=self._genai_types.ThinkingConfig(thinking_level="high"),
         )
+        
+        chat_history = None
+        if history_data:
+            chat_history = []
+            for m in history_data:
+                role = "user" if m.get("role") == "user" else "model"
+                content = m.get("content") or ""
+                chat_history.append({"role": role, "parts": [{"text": content}]})
+                
         self._emit_debug(
             f"CLOUD SESSION [{label}]",
-            f"model={self.cloud_model}\n\n[SYSTEM INSTRUCTION]\n{system_prompt or '[kosong]'}",
+            f"model={self.cloud_model}\n\n[SYSTEM INSTRUCTION]\n{system_prompt or '[kosong]'}\n\n[HISTORY]\n{len(history_data) if history_data else 0} messages",
         )
         return self.cloud_client.chats.create(
             model=self.cloud_model,
             config=config,
+            history=chat_history,
         )
 
     def prepare_standalone_chat(self, system_prompt: str):
@@ -134,12 +144,23 @@ class LLMChatCloudMixin:
             message_payload = content_parts
 
         target_chat = chat or self.cloud_chat
+        
+        dynamic_system_prompt = self.system_prompt
+        if messages and messages[0].get("role") == "system":
+            dynamic_system_prompt = messages[0].get("content") or self.system_prompt
+            
+        dynamic_config = self._genai_types.GenerateContentConfig(
+            system_instruction=dynamic_system_prompt,
+            thinking_config=self._genai_types.ThinkingConfig(thinking_level="high")
+        )
+        
         self._emit_debug(
             f"CLOUD REQUEST [{debug_label}]",
             f"model={self.cloud_model}\n"
             f"temperature={self.temperature}\n"
             f"top_p={self.top_p}\n"
             f"max_output_tokens={self.max_tokens}\n\n"
+            f"[SYSTEM INSTRUCTION]\n{dynamic_system_prompt}\n\n"
             f"[USER MESSAGE]\n{user_message}",
         )
         while True:
@@ -147,6 +168,7 @@ class LLMChatCloudMixin:
                 self._enforce_cloud_rate_limit(skip_min_interval=skip_min_interval)
                 response = target_chat.send_message_stream(
                     message_payload,
+                    config=dynamic_config,
                 )
                 got_any = False
                 last_finish_reason = None
@@ -160,7 +182,7 @@ class LLMChatCloudMixin:
                         got_any = True
                         yield chunk_text
                 if not got_any and not self._abort_event.is_set():
-                    raise RuntimeError(f"Cloud response kosong. finish_reason={last_finish_reason}")
+                    yield f"\n[System: Response empty (finish_reason={last_finish_reason}). Continuing automatically...]\n"
                 self.is_waiting_rate_limit = False
                 return
             except Exception as e:
