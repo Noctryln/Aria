@@ -72,6 +72,12 @@ class LLMChat(
         if self.backend == "cloud":
             self.cloud_chat = self._create_cloud_chat(self.system_prompt, label="reset")
 
+    def load_history(self, history: list) -> None:
+        self.history = [dict(m) for m in history]
+        self.history_token_total = sum(self.count_tokens(m["content"]) for m in self.history)
+        if self.backend == "cloud":
+            self.cloud_chat = self._create_cloud_chat(self.system_prompt, label="resume", history_data=self.history)
+
     def count_tokens(self, text: str) -> int:
         if self.backend == "local":
             try:
