@@ -123,11 +123,43 @@ class AriaToolExecutorMixin:
         return _process_tools(self, text, resp_widget)
 
 def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
+        import re
+        import os
         tool_outputs = []
 
         def is_safe_path(target_path):
             try: return os.path.commonpath([os.path.realpath(LAUNCH_DIR), os.path.realpath(target_path)]) == os.path.realpath(LAUNCH_DIR)
             except ValueError: return False
+
+        def format_diff_with_lines(diff: list[str]) -> list[str]:
+            colored_diff = []
+            old_ln = 0
+            new_ln = 0
+            for line in diff:
+                clean_line = line.replace('[', '\\[')
+                if line.startswith('+++') or line.startswith('---'):
+                    colored_diff.append(f"[bold]{clean_line}[/bold]")
+                elif line.startswith('@@'):
+                    m = re.search(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+                    if m:
+                        old_ln = int(m.group(1))
+                        new_ln = int(m.group(2))
+                    colored_diff.append(f"[#71d1d1]{clean_line}[/#71d1d1]")
+                else:
+                    clean_sub = line[1:].replace('[', '\\[') if len(line) > 1 else ""
+                    if line.startswith('+'):
+                        colored_diff.append(f"[#71d1d1 on #0d1a12]{new_ln:4} │ + {clean_sub}[/]")
+                        new_ln += 1
+                    elif line.startswith('-'):
+                        colored_diff.append(f"[#f472b6 on #2a0d1a]{old_ln:4} │ - {clean_sub}[/]")
+                        old_ln += 1
+                    elif line.startswith('\\'):
+                        colored_diff.append(f"     │   {clean_sub}")
+                    else:
+                        colored_diff.append(f"{new_ln:4} │   {clean_sub}")
+                        old_ln += 1
+                        new_ln += 1
+            return colored_diff
 
         extracted_tools = self._extract_tools_from_text(text)
         
@@ -416,15 +448,7 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                                 self._turn_file_diffs.append({"file": filename, "added": added, "removed": removed, "diff_preview": preview})
                                 
                                 if diff:
-                                    colored_diff = []
-                                    for line in diff:
-                                        clean_line = line.replace('[', '\\[')
-                                        clean_sub = line[1:].replace('[', '\\[') if len(line) > 1 else ""
-                                        if line.startswith('+++') or line.startswith('---'): colored_diff.append(f"[bold]{clean_line}[/bold]")
-                                        elif line.startswith('+'): colored_diff.append(f"[#71d1d1 on #0d1a12]+  {clean_sub}[/]")
-                                        elif line.startswith('-'): colored_diff.append(f"[#f472b6 on #2a0d1a]-  {clean_sub}[/]")
-                                        elif line.startswith('@@'): colored_diff.append(f"[#71d1d1]{clean_line}[/#71d1d1]")
-                                        else: colored_diff.append(f"   {clean_sub}" if line.startswith(' ') else clean_line)
+                                    colored_diff = format_diff_with_lines(diff)
                                     add_notif(f"[bold]File Edited:[/bold] [#d1a662]{filename}[/#d1a662]\n\n" + "\n".join(colored_diff))
                                 else:
                                     add_notif(f"[bold]File Edited:[/bold] [#d1a662]{filename}[/#d1a662] [italic](No diff)[/italic]")
@@ -545,14 +569,19 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
             elif tag in ('search', 'search_workspace'):
                 query = inner.strip().strip("'").strip('"'); res = f"[SEARCH_WORKSPACE '{query}'] ->\n"
                 try:
+                    import re
+                    try:
+                        pattern = re.compile(query)
+                    except re.error:
+                        pattern = re.compile(re.escape(query))
                     results = []
                     for root, dirs, files in os.walk("."):
-                        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "venv"}]
+                        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "venv", "node_modules", ".pytest_cache", "build", "dist", ".gemini"}]
                         for file in files:
                             fp = os.path.join(root, file)
                             try:
                                 for i, line in enumerate(open(fp, "r", encoding="utf-8")):
-                                    if query in line: results.append(f"{fp}:{i+1}: {line.strip()}")
+                                    if pattern.search(line): results.append(f"{fp}:{i+1}: {line.strip()}")
                             except: pass
                     res += "\n".join(results[:50]) if results else "Not Found."
                     tool_outputs.append(res); add_notif(f"[bold]Search Workspace:[/bold] [#d1a662]{query}[/#d1a662]")
@@ -864,8 +893,19 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                             add_notif(f"[bold]GitHub:[/bold] Fetching diff for PR [#d1a662]#{num}[/#d1a662]")
                             pr = repo.get_pull(num)
                             import requests
-                            patch_res = requests.get(pr.patch_url, headers={"Authorization": f"token {token}"}, timeout=20)
-                            diff_txt = patch_res.text[:5000]
+                            api_url = f"https://api.github.com/repos/{repo_str}/pulls/{num}"
+                            diff_res = requests.get(
+                                api_url,
+                                headers={
+                                    "Authorization": f"Bearer {token}",
+                                    "Accept": "application/vnd.github.v3.diff"
+                                },
+                                timeout=20
+                            )
+                            if diff_res.status_code == 200:
+                                diff_txt = diff_res.text[:5000]
+                            else:
+                                diff_txt = f"Gagal mendapatkan diff (Status {diff_res.status_code}): {diff_res.text[:200]}"
                             tool_outputs.append(f"[GITHUB_PR diff #{num}] ->\n{diff_txt}")
                         elif action == "review":
                             num = int(num_match.group(1)) if num_match else None
@@ -1073,7 +1113,7 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                                         if "refresh_token" in t_data:
                                             self.config["github_refresh_token"] = t_data["refresh_token"]
                                         save_config(self.config)
-                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Silakan ulangi instruksi sebelumnya."
+                                        err_msg = "Token expired tapi berhasil di-refresh otomatis. Ulangi toolnya!"
                                     else:
                                         err_msg = "Gagal refresh token otomatis. Silakan ketik /github login lagi."
                                 except Exception:
@@ -1256,15 +1296,15 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                         is_success = False
 
             elif tag in ['run_cmd', 'runcmd']:
+                import re
                 cmd = inner.strip()
-                
+
                 timeout_val = 60.0
                 if attrs:
                     m_timeout = re.search(r'timeout\s*=\s*["\']?(\d+)["\']?', attrs, re.IGNORECASE)
                     if m_timeout:
                         try: timeout_val = float(m_timeout.group(1))
-                        except: pass
-                
+                        except: pass                
                 self.process_header = f"[bold #71d1d1]▶ Shell:[/bold #71d1d1] [#d1a662]{rich_escape(cmd)}[/#d1a662]\n"
                 self.process_out_lines = []
                 
@@ -1360,8 +1400,13 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                     add_notif(self.process_header + f"[bold #f472b6]Error: {e}[/bold #f472b6]")
                     is_success = False
 
-            decorated_tag = self._decorate_tool_tags_with_status(full_tag, "success" if is_success else "error")
-            ui_pieces.append(decorated_tag)
+            if tag in ('write', 'edit') and is_success:
+                # Jangan tambahkan decorated_tag (stream lama) agar digantikan dengan diff.
+                pass
+            else:
+                decorated_tag = self._decorate_tool_tags_with_status(full_tag, "success" if is_success else "error")
+                ui_pieces.append(decorated_tag)
+                
             if current_notifs:
                 combined_notifs = "\n\n".join(current_notifs)
                 ui_pieces.append(f"<ui_notif>{combined_notifs}</ui_notif>")
