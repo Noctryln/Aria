@@ -10,8 +10,10 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Button, Static, TextArea
 
+import uuid
 from aria.agent.agent import AriaAgentMixin, LLMChat
 from aria.app.lifecycle import AriaAppLifecycleMixin
+from aria.agent.memory import get_session, get_sessions_for_dir, save_current_session
 from aria.core.config import save_config
 from aria.core.paths import LAUNCH_DIR
 from aria.tools.parser import (
@@ -36,14 +38,33 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
     USER_STREAM_INTERVAL = 0.02
     BINDINGS = [("escape", "interrupt", "Stop"), ("ctrl+q", "quit_app", "Quit")]
 
-    def __init__(self, llm: LLMChat, config: dict):
+    def __init__(self, llm: LLMChat, config: dict, resume_session_id: str = None):
         super().__init__()
         self.llm = llm
         self.config = dict(config)
         self.mode_label = llm.mode_label
+        self.session_id = resume_session_id if resume_session_id else str(uuid.uuid4())
+        self._startup_notification = None
+        
+        if resume_session_id:
+            sess = get_session(resume_session_id)
+            if sess:
+                import os
+                if os.path.normpath(sess.get("dir", "")) == os.path.normpath(LAUNCH_DIR):
+                    self.session_id = sess["id"]
+                    self.llm.load_history(sess.get("history", []))
+                else:
+                    self.session_id = str(uuid.uuid4())
+                    self._startup_notification = f"[bold #f472b6]Sesi tidak tersedia.[/bold #f472b6] Sesi {resume_session_id[-4:]} berada di direktori yang berbeda. Memulai sesi baru."
+
         self._loading_frame = 0; self._loading_timer = None; self._stop_listening_fn = None
-        self._recognizer = sr.Recognizer(); self.show_thinking = False; self._cancel_stream = False 
-        self.start_time = 0.0; self.conversation_turns = 0; self.total_input_tokens = 0; self.total_output_tokens = 0
+        self._recognizer = sr.Recognizer(); self.show_thinking = (llm.backend == "cloud"); self._cancel_stream = False 
+        self.start_time = 0.0; 
+        
+        self.conversation_turns = len([m for m in self.llm.history if m["role"] == "user"])
+        self.total_input_tokens = sum(self.llm.count_tokens(m["content"]) for m in self.llm.history if m["role"] == "user")
+        self.total_output_tokens = sum(self.llm.count_tokens(m["content"]) for m in self.llm.history if m["role"] == "assistant")
+        
         self.farewell_data = None; self.current_suggestion = None
         self.tool_permission_session = False; self.tool_permission_event = threading.Event(); self.tool_permission_granted = False
         self.reload_requested = False
@@ -59,12 +80,17 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         self.process_header = ""
         self._suggestion_items: list[str] = []
         self._suggestion_index: int = -1
+        self._session_items: list[dict] = []
+        self._session_index: int = -1
         self._branches: list[dict] = []
         self._branch_counter: int = 0
         self._pending_file_snapshot: dict[str, str] = {}
         self._turn_file_diffs: list[dict] = []
 
     def action_interrupt(self) -> None:
+        if self.query_one("#session-dialog").display:
+            self._hide_session_ui()
+            return
         self._cancel_stream = True
         self.llm.request_abort()
 
@@ -81,8 +107,8 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
             pass
 
     def compose(self) -> ComposeResult:
-        yield Banner(id="banner")
-        with VerticalScroll(id="chat-log"): pass 
+        with VerticalScroll(id="chat-log"):
+            yield Banner(id="banner")
         with Vertical(id="input-area"):
             yield Static(id="separator"); yield Static("", id="loading-bar")
             with Vertical(id="permission-dialog"):
@@ -92,6 +118,8 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                     yield Button("Allow once", id="btn-allow-once", classes="perm-btn")
                     yield Button("Always allow session", id="btn-allow-session", classes="perm-btn")
                     yield Button("Deny", id="btn-deny", classes="perm-btn")
+            with Vertical(id="session-dialog"):
+                pass
             chat_input = ChatInput(id="input-box")
             chat_input.show_line_numbers = False; chat_input.border_title = "Ketik pesan untuk Aria..."
             yield chat_input
@@ -102,6 +130,45 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         self._thread_id = threading.get_ident()
         self.start_time = time.time()
         self._refresh_separator(); self._refresh_status(); self._render_idle_bar(); self.query_one("#input-box").focus()
+        if self.llm.history:
+            self._render_history()
+        if getattr(self, "_startup_notification", None):
+            log = self.query_one("#chat-log")
+            log.mount(Static(self._startup_notification, classes="tool-box", markup=True))
+            log.scroll_end(animate=False)
+
+    def _render_history(self) -> None:
+        log = self.query_one("#chat-log")
+        from rich.table import Table
+        from rich.text import Text
+        for m in self.llm.history:
+            role = m.get("role")
+            content = m.get("content", "")
+            
+            if role == "user":
+                if content.startswith("<system_observation>") or content.startswith("[Sistem:"):
+                    continue
+                else:
+                    grid = Table.grid(padding=(0, 2))
+                    grid.add_column(width=1)
+                    grid.add_column()
+                    
+                    import re
+                    clean_content = re.sub(r'<system_observation>.*?(?:</system_observation>|$)', '', content, flags=re.DOTALL).strip()
+                    
+                    t_content = Text(clean_content, style="#c6bbd8")
+                    for match in re.finditer(r'\[(?:Image|File)-\d+\]|\[\d+-lines\]', clean_content):
+                        t_content.stylize("bold #71d1d1", match.start(), match.end())
+                        
+                    grid.add_row(Text(">", style="#d1a662 bold"), t_content)
+                    user_box = Static(grid, classes="chat-msg-user", markup=False)
+                    log.mount(user_box)
+            elif role == "assistant":
+                resp = AIResponse()
+                resp.display = True
+                log.mount(resp)
+                resp.finalize_animated_content(content.strip())
+        log.scroll_end(animate=False)
 
     def on_resize(self) -> None: self._refresh_separator()
 
@@ -168,7 +235,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
 
     _CMD_DESCRIPTIONS = {
         "/speech":  "Aktifkan input suara",
-        "/think":   "Toggle mode thinking (local only)",
+        "/think":   "Toggle mode thinking",
         "/debug":   "Toggle debug API log",
         "/lora":    "Load LoRA adapter: /lora <path|off>",
         "/local":   "Beralih ke backend model lokal",
@@ -177,6 +244,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         "/clear":   "Bersihkan layar chat",
         "/reset":   "Reset context window percakapan",
         "/branch":  "Lihat snapshot branch percakapan",
+        "/session": "Lihat/muat sesi percakapan",
         "/quit":    "Keluar dari Aria",
     }
 
@@ -206,20 +274,84 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         panel.remove_children()
         panel.display = False
 
+    def _render_sessions(self) -> None:
+        panel = self.query_one("#session-dialog")
+        panel.remove_children()
+        if not self._session_items:
+            panel.display = False
+            return
+        
+        # Header
+        panel.mount(Static("  [bold #d1a662]ID   | msg | time | input[/bold #d1a662]", markup=True, classes="session-item"))
+        
+        for i, s in enumerate(self._session_items[:5]): # Max 5 items
+            is_sel = (i == self._session_index)
+            
+            sid = s["id"][-4:]
+            msg = str(s.get("msg_count", 0)).rjust(3)
+            
+            import time as time_mod
+            dt = time_mod.time() - s.get("updated_at", time_mod.time())
+            if dt < 60:
+                t_str = f"{int(dt)}s".rjust(4)
+            elif dt < 3600:
+                t_str = f"{int(dt/60)}m".rjust(4)
+            elif dt < 86400:
+                t_str = f"{int(dt/3600)}h".rjust(4)
+            else:
+                t_str = f"{int(dt/86400)}d".rjust(4)
+                
+            inp = (s.get("last_input", "") or "...")[:40]
+            inp = inp.replace("\n", " ")
+            
+            row_text = f"{sid} | {msg} | {t_str} | {inp}"
+            
+            row = Static(
+                f"{'❯ ' if is_sel else '  '}[bold]{row_text}[/bold]" if is_sel else f"  {row_text}",
+                classes="session-item" + (" --highlight" if is_sel else ""),
+                markup=True,
+            )
+            panel.mount(row)
+        panel.display = True
+
+    def _show_session_ui(self) -> None:
+        from aria.agent.memory import get_sessions_for_dir
+        self._hide_suggestions()
+        self.query_one("#input-box").border_title = "Pilih sesi (Panah Bawah/Atas, Enter untuk Load, Esc untuk Batal)"
+        sessions = get_sessions_for_dir(LAUNCH_DIR)
+        self._session_items = sessions
+        self._session_index = 0 if sessions else -1
+        if not sessions:
+            self._session_items = []
+            panel = self.query_one("#session-dialog")
+            panel.remove_children()
+            panel.mount(Static("  [italic #7b6b9a]Belum ada sesi di direktori ini.[/italic #7b6b9a]", markup=True, classes="session-item"))
+            panel.display = True
+            return
+        self._render_sessions()
+
+    def _hide_session_ui(self) -> None:
+        self._session_items = []
+        self._session_index = -1
+        panel = self.query_one("#session-dialog")
+        panel.remove_children()
+        panel.display = False
+        if not getattr(self, "active_process", None):
+            self.query_one("#input-box").border_title = "Ketik pesan untuk Aria..."
+
     def _suggestion_move(self, direction: int) -> None:
+        if self.query_one("#session-dialog").display:
+            if not self._session_items: return
+            n = min(len(self._session_items), 5)
+            self._session_index = (self._session_index + direction) % n
+            self._render_sessions()
+            return
+            
         if not self._suggestion_items:
             return
         n = len(self._suggestion_items)
         self._suggestion_index = (self._suggestion_index + direction) % n
         self._render_suggestions(self._suggestion_items)
-        self._is_suggesting_move = True
-        try:
-            selected_text = self._suggestion_items[self._suggestion_index]
-            input_box = self.query_one("#input-box")
-            input_box.text = selected_text
-            input_box.cursor_location = (0, len(selected_text))
-        finally:
-            self._is_suggesting_move = False
 
     def _start_loading(self, msg="Thinking...") -> None:
         if self._loading_timer:
@@ -250,7 +382,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 event.text_area.border_title = "" if text else "Ketik pesan untuk Aria..."
 
         if text.startswith("/"):
-            all_cmds = ["/speech", "/think", "/debug", "/lora", "/local", "/cloud", "/github", "/clear", "/reset", "/branch", "/quit"]
+            all_cmds = ["/speech", "/think", "/debug", "/lora", "/local", "/cloud", "/github", "/clear", "/reset", "/branch", "/session", "/quit"]
             matches = [c for c in all_cmds if c.startswith(text.lower())]
             # Reset index jika daftar matches berubah
             if matches != self._suggestion_items:
@@ -266,6 +398,17 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
     def handle_input_submission(self, text: str, attachments: dict = None) -> None:
         if attachments is None:
             attachments = {}
+            
+        if self.query_one("#session-dialog").display:
+            if self._session_items and self._session_index >= 0:
+                selected = self._session_items[self._session_index]
+                self._hide_session_ui()
+                self.session_id = selected["id"]
+                self.request_reload(f"Loading session {self.session_id[-4:]}...")
+            else:
+                self._hide_session_ui()
+            return
+
         if self._stop_listening_fn:
             self._stop_listening_fn(wait_for_stop=False); self._stop_listening_fn = None; self._reset_input_placeholder(); return
             
@@ -290,6 +433,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         if self._loading_timer is None: self._render_idle_bar()
 
         lower_text = text.lower()
+        if lower_text == "/session": self._show_session_ui(); return
         if lower_text == "/speech": self.query_one("#input-box").border_title = "Mendengarkan... (Bicara sekarang, Enter untuk batal)"; self._start_speech_recognition(); return
         if lower_text.startswith("/github"):
             parts = text.split()
@@ -301,9 +445,6 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 log.scroll_end(animate=False)
             return
         if lower_text == "/think":
-            if self.llm.backend == "cloud":
-                t_status = Text("Thinking: tidak berlaku di mode Cloud", style="#71d1d1 bold")
-                log = self.query_one("#chat-log"); log.mount(Static(t_status, classes="tool-box")); log.scroll_end(animate=False); return
             self.show_thinking = not self.show_thinking
             t_status = Text(f"Thinking: {'Aktif' if self.show_thinking else 'Non-aktif'}", style="#71d1d1 bold")
             log = self.query_one("#chat-log"); log.mount(Static(t_status, classes="tool-box")); log.scroll_end(animate=False); return
@@ -444,6 +585,19 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
 
             self._start_loading("Executing tools..."); self.tool_permission_event.set()
 
+    def _save_session_sync(self) -> None:
+        from aria.agent.memory import save_current_session
+        user_msgs = [
+            m["content"] for m in self.llm.history 
+            if m["role"] == "user" 
+            and not m["content"].startswith("<system_observation>") 
+            and not m["content"].startswith("[Sistem:")
+        ]
+        last_input = user_msgs[-1] if user_msgs else ""
+        import re
+        last_input = re.sub(r'<system_observation>.*?(?:</system_observation>|$)', '', last_input, flags=re.DOTALL).strip()
+        save_current_session(self.session_id, LAUNCH_DIR, self.llm.history, len(self.llm.history), last_input)
+
     @work(thread=True)
     def _run_stream(self) -> None:
         last_user_msg = ""
@@ -478,29 +632,20 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         widgets = {}
 
         def setup_msg():
-            widgets['header'] = Static("Thinking...", classes="think-header")
-            widgets['header'].display = False
-            widgets['think'] = ThinkBlock("")
-            widgets['think'].display = False
             widgets['resp'] = AIResponse()
             widgets['resp'].display = True
             log = self.query_one("#chat-log")
-            log.mount(widgets['header'], widgets['think'], widgets['resp'])
+            log.mount(widgets['resp'])
             widgets['resp'].start_thinking_placeholder()
             log.scroll_end(animate=False)
 
         self.call_from_thread(setup_msg)
-        phase = "pre"; buf = ""; think_text = ""; resp_text = ""; last_update_time = 0.0; last_scroll_time = 0.0
+        buf = ""; resp_text = ""; last_update_time = 0.0; last_scroll_time = 0.0
         _streaming_started = False
 
-        def update_ui(t_text: str, r_text: str, p: str):
-            if 'header' not in widgets: return
-            clean_t = t_text.strip()
-            if clean_t and self.show_thinking:
-                widgets['header'].display = True; widgets['think'].display = True; widgets['think'].update(clean_t)
-            else:
-                widgets['header'].display = False; widgets['think'].display = False
-            clean_r = r_text.strip() 
+        def update_ui(r_text: str):
+            if 'resp' not in widgets: return
+            clean_r = r_text.strip()
             if clean_r:
                 widgets['resp'].display = True
                 if self.llm.backend == "cloud":
@@ -509,15 +654,11 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                         resp_widget._content_animation_visible = clean_r
                     resp_widget._content_animation_target = clean_r
                     if resp_widget._content_animation_timer is None:
-                        resp_widget.stop_thinking_placeholder()
                         resp_widget._content_animation_timer = resp_widget.set_interval(
                             AriaApp.USER_STREAM_INTERVAL, resp_widget._tick_content_animation
                         )
                 else:
                     widgets['resp'].update_content(clean_r)
-            elif p in ("pre", "think"):
-                widgets['resp'].display = True
-                widgets['resp'].start_thinking_placeholder()
             else:
                 widgets['resp'].stop_content_animation()
                 widgets['resp'].stop_thinking_placeholder()
@@ -531,7 +672,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         def trigger_update(force=False):
             nonlocal last_update_time; now = time.time()
             if force or (now - last_update_time > 0.05):
-                self.call_from_thread(update_ui, think_text, resp_text, phase); last_update_time = now
+                self.call_from_thread(update_ui, resp_text); last_update_time = now
 
         self._cancel_stream = False
         stream_error = None
@@ -542,39 +683,49 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                     # Fase 2: streaming dimulai → ubah loading ke "Aria Mengetik..."
                     self.call_from_thread(self._start_loading, "Aria Mengetik...")
                 if self._cancel_stream:
-                    if phase in ("pre", "think"): think_text += "\n\n*[Dihentikan]*"; phase = "response" 
-                    else: resp_text += "\n\n*[Dihentikan]*"
+                    resp_text += "\n\n*[Dihentikan]*"
                     break
 
-                buf += raw_token.replace("\r", "")
-                while True:
-                    if phase == "pre":
-                        idx = buf.find("<think>")
-                        if idx != -1: resp_text += buf[:idx]; buf = buf[idx + 7:]; phase = "think"; continue
-                        partial = next((i for i in range(1, 8) if buf.endswith("<think>"[:i])), 0)
-                        if partial: resp_text += buf[:-partial]; buf = buf[-partial:]
-                        else: resp_text += buf; buf = ""; phase = "response"
-                        trigger_update(); break
-                    elif phase == "think":
-                        idx_close = buf.find("</think>")
+                # Update status berdasarkan keberadaan tag think yang belum ditutup
+                is_thinking = False
+                if self.show_thinking:
+                    open_count = (resp_text + buf).count("<think>")
+                    close_count = (resp_text + buf).count("</think>")
+                    is_thinking = open_count > close_count
+                
+                target_msg = "Aria Berpikir..." if is_thinking else "Aria Mengetik..."
+                if getattr(self, "loading_msg", "") != target_msg:
+                    self.call_from_thread(self._start_loading, target_msg)
+
+                # Jika show_thinking False, hapus tag think on the fly (jika ada)
+                if not self.show_thinking:
+                    buf += raw_token.replace("\r", "")
+                    # Sangat disederhanakan: Hapus tag think
+                    idx = buf.find("<think>")
+                    if idx != -1:
+                        idx_close = buf.find("</think>", idx)
                         if idx_close != -1:
-                            think_text += buf[:idx_close]; buf = buf[idx_close + 8:]; phase = "response"
-                            self.call_from_thread(self._stop_loading); continue
-                        partial = next((i for i in range(1, 9) if buf.endswith("</think>"[:i])), 0)
-                        if partial: think_text += buf[:-partial]; buf = buf[-partial:]
-                        else: think_text += buf; buf = ""
-                        trigger_update(); break
-                    elif phase == "response":
-                        if buf: resp_text += buf; buf = ""; trigger_update() 
-                        break
+                            buf = buf[:idx] + buf[idx_close + 8:]
+                        else:
+                            # Masih menunggu penutup tag, simpan di buf
+                            pass
+                    if "<think>" not in buf:
+                        resp_text += buf; buf = ""
+                else:
+                    resp_text += raw_token.replace("\r", "")
+
+                trigger_update()
         except Exception as e:
             stream_error = e
 
-        if phase == "think" and buf: think_text += buf
-        elif phase == "response" and buf: resp_text += buf
+        if buf and not self.show_thinking and "<think>" not in buf:
+            resp_text += buf
+        elif buf and self.show_thinking:
+            resp_text += buf
+
         if stream_error is not None and not self._cancel_stream:
             resp_text += f"\n\n*[Runtime LLM Error: {stream_error}]*"
-        if self._cancel_stream and not think_text.strip() and not resp_text.strip():
+        if self._cancel_stream and not resp_text.strip():
             resp_text = "*[Dihentikan sebelum output tampil]*"
 
         trigger_update(force=True)
@@ -590,27 +741,30 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         if active_tags:
             if not self.tool_permission_session:
                 self.call_from_thread(self._show_permission_dialog, active_tags)
-                self.tool_permission_event.clear(); self.tool_permission_event.wait() 
+                self.tool_permission_event.clear(); self.tool_permission_event.wait()
 
                 if not self.tool_permission_granted:
                     denied_resp_text = self._decorate_tool_tags_with_status(resp_text, "denied")
                     self.llm.add_message("assistant", denied_resp_text)
-                    self.call_from_thread(update_ui, think_text, denied_resp_text, phase)
+                    self.call_from_thread(update_ui, denied_resp_text)
                     self.call_from_thread(self._stop_loading)
                     self.call_from_thread(self._submit_to_chat, "<system_observation>\nERROR: Permission Denied by User.\nSTATUS TOOL: Izin ditolak oleh user.\n</system_observation>", True)
                     return
-            
+
         tool_outputs, full_combined_resp = self._process_tools(resp_text, widgets['resp'])
-        
+
         if self._turn_file_diffs or self._pending_file_snapshot:
             user_msgs = [m['content'] for m in self.llm.history if m['role'] == 'user']
             last_user = user_msgs[-1][:40].replace('\n', ' ') if user_msgs else "turn"
             self._save_branch(label=last_user)
 
-        self.llm.add_message("assistant", resp_text)
+        import re
+        history_resp_text = re.sub(r'<ui_notif>.*?</ui_notif>', '', full_combined_resp, flags=re.DOTALL).strip()
+        self.llm.add_message("assistant", history_resp_text)
+        
         if self.llm.backend == "cloud":
             self.call_from_thread(widgets['resp'].finalize_animated_content, full_combined_resp)
-        self.call_from_thread(update_ui, think_text, full_combined_resp, phase)
+        self.call_from_thread(update_ui, full_combined_resp)
         self.call_from_thread(self._stop_loading)
 
         if tool_outputs:
@@ -629,3 +783,5 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
 
             obs_text = f"[Sistem: Hasil Eksekusi Tool]\n<system_observation>\n{obs_content}\n</system_observation>"
             self.call_from_thread(self._submit_to_chat, obs_text, True)
+            
+        self.call_from_thread(self._save_session_sync)
