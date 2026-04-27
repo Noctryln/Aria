@@ -21,6 +21,10 @@ from aria.core.runtime import (
 from aria.ui.app import AriaApp
 
 def main():
+    resume_session_id = None
+    if len(sys.argv) > 2 and sys.argv[1] == "--resume":
+        resume_session_id = sys.argv[2]
+    
     try:
         if os.name == "nt":
             os.system("title Aria")
@@ -53,9 +57,10 @@ def main():
             spinner_process.join()
         sys.stdout.write("\r" + " " * 50 + "\r")
         sys.stdout.flush()
-        app = AriaApp(llm, config)
+        app = AriaApp(llm, config, resume_session_id=resume_session_id)
         app.run()
         if getattr(app, "reload_requested", False):
+            resume_session_id = getattr(app, "session_id", resume_session_id)
             llm.close()  # Bebaskan RAM sebelum loop berikutnya
             sys.stdout.write("\033[2J\033[1;1H")
             sys.stdout.flush()
@@ -144,6 +149,10 @@ def main():
                 else:
                     stats_line.append(part, style="#7b6b9a")
                 stats_line.append("  |  ", style="#3d2d5a")
+                
+            session_id_short = getattr(app, "session_id", "unknown")
+            stats_line.append("Session ID: ", style="#7b6b9a")
+            stats_line.append(session_id_short, style="#d1a662")
 
             footer_panel = Panel(
                 stats_line,

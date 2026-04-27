@@ -61,14 +61,18 @@ class AriaAppLifecycleMixin:
             log = self.query_one("#chat-log")
             log.mount(Static(f"[bold #f472b6]Branch #{branch_id} tidak ditemukan.[/bold #f472b6]", classes="tool-box"))
             log.scroll_end(animate=False); return
-        self.llm.history = [dict(m) for m in target['history']]
-        self.llm.history_token_total = sum(self.llm.count_tokens(m['content']) for m in self.llm.history)
+        self.llm.load_history(target['history'])
         self._refresh_status()
         log = self.query_one("#chat-log")
         log.mount(Static(f"[bold #71d1d1]✓ Restored ke Branch #{branch_id}:[/bold #71d1d1] [#d1a662]{target['label']}[/#d1a662]  [#7b6b9a]{target['timestamp']}[/#7b6b9a]\nHistory percakapan dikembalikan. File di disk tidak diubah.", classes="tool-box"))
         log.scroll_end(animate=False)
 
     def trigger_exit(self) -> None:
+        if hasattr(self, "_save_session_sync"):
+            try:
+                self._save_session_sync()
+            except Exception:
+                pass
         if not hasattr(self, "is_exiting"):
             self.is_exiting = True
             self.query_one("#input-box").disabled = True

@@ -6,7 +6,7 @@ class ChatInput(TextArea):
     BINDINGS = [
         Binding("enter", "submit_message", "Kirim", priority=True),
         Binding("shift+enter", "insert_newline", "Baris Baru", priority=True),
-        Binding("ctrl+n", "insert_newline", "Baris Baru (Alternatif)", priority=True),
+        Binding("ctrl+n", "insert_newline", "Baris Baru (Alt)", priority=True),
         Binding("up", "suggest_up", "Naik", priority=True),
         Binding("down", "suggest_down", "Turun", priority=True),
         Binding("ctrl+c", "copy_selected", "Copy", priority=True),
@@ -70,7 +70,12 @@ class ChatInput(TextArea):
             event.prevent_default()
 
     def action_submit_message(self) -> None:
-        if self.text.strip(): 
+        try:
+            is_session_open = self.app.query_one("#session-dialog").display
+        except Exception:
+            is_session_open = False
+            
+        if self.text.strip() or is_session_open: 
             import inspect
             sig = inspect.signature(self.app.handle_input_submission)
             if 'attachments' in sig.parameters:

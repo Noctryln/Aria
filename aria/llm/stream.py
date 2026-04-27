@@ -1,8 +1,42 @@
 class LLMChatStreamMixin:
-    def _effective_system_prompt(self) -> str:
+    def _effective_system_prompt(self, enable_thinking=True) -> str:
         limit = 500 if self.backend == "cloud" else 50
-        mode_info = f"\n\n[INFO SISTEM]\nSaat ini kamu berjalan di mode: {self.backend.upper()}.\nBatas maksimal baris untuk membaca file per chunk adalah: {limit} baris.\nSesuaikan urutan chunk membacamu dengan batas ini (misal 1-{limit}, {limit+1}-{limit*2}, dst)."
-        return self.system_prompt + mode_info
+        think_status = "YA" if enable_thinking else "TIDAK"
+        mode_info = f"\n\n[INFO SISTEM]\nSaat ini kamu berjalan di mode: {self.backend.upper()}.\nBatas maksimal baris untuk membaca file per chunk adalah: {limit} baris.\nSesuaikan urutan chunk membacamu dengan batas ini (misal 1-{limit}, {limit+1}-{limit*2}, dst).\nStatus /think: {think_status}"
+        
+        think_info = ""
+        if self.backend == "cloud" and enable_thinking:
+            think_info = (
+                "\n\n[PENTING: FORMAT OUTPUT BERPIKIR (KHUSUS CLOUD)]\n"
+                "API cloud TIDAK memiliki fitur pemikiran bawaan. Oleh karena itu, kamu WAJIB MEMBUNGKUS seluruh "
+                "proses penalaran, perencanaan, dan status ke dalam tag XML <think> dan </think> secara eksplisit.\n"
+                "ATURAN MUTLAK:\n"
+                "1. SEMUA deklarasi seperti INTENT, TASK SCOPE, PROGRESS, RE-ANCHOR, RISK CHECK, CMD CHECK, "
+                "REWRITE, BLAST RADIUS, Asumsi, dan Rencana aksi HARUS berada DI DALAM tag <think>.\n"
+                "   (PENGECUALIAN: Jika user secara EKSPLISIT menyuruhmu untuk menulis atau mengutip kembali "
+                "isi dari INTENT/PLANNING/dll sebagai bagian dari percakapan normal, maka tulislah di luar tag).\n"
+                "2. JANGAN PERNAH MENCETAK keyword-keyword tersebut di luar tag <think> (kecuali kondisi pengecualian terpenuhi)!\n"
+                "3. Di dalam tag <think>, kamu BEBAS menggunakan baris baru (Enter), list angka (1. 2. 3.), atau bullet point (-). "
+                "Jangan gabungkan semuanya menjadi satu paragraf panjang yang sulit dibaca. Buatlah rapi.\n"
+                "4. Kamu bisa menggunakan satu blok <think>...</think> besar di awal respons, atau beberapa blok "
+                "<think>...</think> kecil jika tersebar, asalkan tidak ada keyword penalaran yang bocor ke respons utama.\n\n"
+                "CONTOH STRUKTUR RESPONS YANG BENAR:\n"
+                "<think>\n"
+                "INTENT: Aku menginterpretasikan permintaan ini sebagai...\n"
+                "Rencana aksi:\n"
+                "1. Membuat file...\n"
+                "2. Menjalankan skrip...\n"
+                "Asumsi yang aku buat: Kamu ingin kode yang...\n\n"
+                "TASK SCOPE: Membuat skrip... | DIKETAHUI: ... | BELUM DIKETAHUI: ...\n"
+                "BLAST RADIUS: Perubahan ini hanya...\n"
+                "</think>\n"
+                "Tentu, aku akan membuatkan skrip kalkulator yang kamu minta. Berikut adalah filenya:\n"
+                "<write file=\"kalkulator.py\">\n"
+                "...\n"
+                "</write>"
+            )
+            
+        return self.system_prompt + mode_info + think_info
 
     def _apply_runtime_controls(self, messages, enable_thinking=True):
         prepared = [dict(msg) for msg in messages]
@@ -16,8 +50,8 @@ class LLMChatStreamMixin:
         while self.history and self.history_token_total > max_hist_tokens:
             removed = self.history.pop(0)
             self.history_token_total -= self.count_tokens(removed["content"])
-            
-        messages = [{"role": "system", "content": self._effective_system_prompt()}]
+
+        messages = [{"role": "system", "content": self._effective_system_prompt(enable_thinking=enable_thinking)}]        
         if self.backend == "cloud":
             if self.history:
                 messages.append(dict(self.history[-1]))
@@ -77,14 +111,14 @@ class LLMChatStreamMixin:
         try:
             if self.backend == "cloud":
                 messages = [
-                    {"role": "system", "content": self._effective_system_prompt()},
+                    {"role": "system", "content": self._effective_system_prompt(enable_thinking=enable_thinking)},
                     {"role": "user", "content": prompt},
                 ]
-                temp_chat = self._create_cloud_chat(self._effective_system_prompt(), label="one-off")
+                temp_chat = self._create_cloud_chat(self._effective_system_prompt(enable_thinking=enable_thinking), label="one-off")
                 return "".join(self._stream_cloud_response(messages, chat=temp_chat, debug_label="one-off", skip_min_interval=True))
             messages = self._apply_runtime_controls(
                 [
-                    {"role": "system", "content": self._effective_system_prompt()},
+                    {"role": "system", "content": self._effective_system_prompt(enable_thinking=enable_thinking)},
                     {"role": "user", "content": prompt},
                 ],
                 enable_thinking=enable_thinking,
