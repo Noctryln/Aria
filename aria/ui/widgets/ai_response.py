@@ -12,6 +12,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 
 from aria.core.runtime import THINKING_PHRASE_SWAP_EVERY, THINKING_SHIMMER_INTERVAL, THINKING_SHIMMER_STEP
+from aria.ui.widgets.think_block import ThinkBlock
 from aria.utils.text import LIST_BULLET_PATTERN, LIST_NUM_PATTERN, SYSTEM_OBSERVATION_PATTERN, TOOL_OPEN_PATTERN
 
 class AriaApp:
@@ -41,7 +42,7 @@ class AriaQuoteBlock:
             if i < len(lines) - 1:
                 yield nl
                 
-class AIResponse(Horizontal):
+class AIResponse(Vertical):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._segment_widgets = []; self._segment_layout = []
@@ -67,12 +68,13 @@ class AIResponse(Horizontal):
         ]
 
     def compose(self) -> ComposeResult:
-        yield Static("◈  ", classes="ai-icon")
-        self.msg_content = Vertical(classes="ai-content")
+        self.msg_content = Vertical(classes="ai-content-wrapper")
         yield self.msg_content
 
     def on_mount(self) -> None:
-        if self._thinking_active or self._thinking_pending_render:
+        if hasattr(self, "_content_animation_target") and self._content_animation_target:
+            self.update_content(self._content_animation_target)
+        elif self._thinking_active or self._thinking_pending_render:
             self._render_thinking_placeholder()
 
     def start_thinking_placeholder(self) -> None:
@@ -113,7 +115,6 @@ class AIResponse(Horizontal):
         return 2
 
     def animate_content_to(self, text: str) -> None:
-        self.stop_thinking_placeholder()
         target = text or ""
         if target == self._content_animation_target and self._content_animation_timer is not None:
             return
@@ -185,23 +186,32 @@ class AIResponse(Horizontal):
     def _render_thinking_placeholder(self) -> None:
         if not hasattr(self, "msg_content"):
             return
-        
+
+        if self._content_animation_target:
+            self.update_content(self._content_animation_target)
+            return
+
         phrase = self._get_thinking_phrase()
         visible_phrase = phrase[:self._thinking_visible_chars] if self._thinking_visible_chars else ""
-             
+
         if len(visible_phrase) < len(phrase):
             shimmer = f"[#7b6b9a]{rich_escape(visible_phrase)}[/#7b6b9a]"
         else:
             shimmer = self._render_shimmer_text(visible_phrase, self._thinking_frame)
-            
+
         self._thinking_pending_render = False
         self._last_signature = ("thinking", self._thinking_phrase_index, self._thinking_frame)
-        if self._segment_layout != [("thinking", "")]:
+        if self._segment_layout != [("thinking_inline", "")]:
             self.msg_content.remove_children()
             widget = Static("", classes="thinking-placeholder", markup=True)
-            self.msg_content.mount(widget)
+            wrapper = Horizontal(
+                Static("◈  ", classes="ai-icon"),
+                Vertical(widget, classes="ai-content"),
+                classes="ai-response-part"
+            )
+            self.msg_content.mount(wrapper)
             self._segment_widgets = [widget]
-            self._segment_layout = [("thinking", "")]
+            self._segment_layout = [("thinking_inline", "")]
         self._segment_widgets[0].update(shimmer)
 
     def _get_thinking_phrase(self) -> str:
@@ -262,25 +272,30 @@ class AIResponse(Horizontal):
 
         current_text = ""
         
+        md_block_re = re.compile(r'(?:^|\n)[ \t]*```')
+        md_inline_re = re.compile(r'`')
+        notif_re = re.compile(r'<ui_notif>\n*(.*?)\n*</ui_notif>', re.DOTALL)
+        think_re = re.compile(r'<think>(.*?)(?:</think>|$)', re.DOTALL | re.IGNORECASE)
+        
         while i < n:
-            # Code block ``` must be at the start of a line (or after spaces) to avoid catching inline ``` 
-            md_block_match = re.search(r'(?:^|\n)[ \t]*```', text[i:])
-            md_inline_match = re.search(r'`', text[i:])
-            tool_match = TOOL_OPEN_PATTERN.search(text[i:])
-            obs_match = SYSTEM_OBSERVATION_PATTERN.search(text[i:])
-            notif_match = re.search(r'<ui_notif>\n*(.*?)\n*</ui_notif>', text[i:], re.DOTALL)
+            md_block_match = md_block_re.search(text, i)
+            md_inline_match = md_inline_re.search(text, i)
+            tool_match = TOOL_OPEN_PATTERN.search(text, i)
+            obs_match = SYSTEM_OBSERVATION_PATTERN.search(text, i)
+            notif_match = notif_re.search(text, i)
+            think_match = think_re.search(text, i)
             
             candidates = []
             if md_block_match: 
-                # Adjust open_idx to the actual start of ```
                 actual_start = md_block_match.start()
-                if text[i + actual_start] == '\n': actual_start += 1
-                while text[i + actual_start] in (' ', '\t'): actual_start += 1
-                candidates.append((i + actual_start, "md_block", md_block_match))
-            if md_inline_match: candidates.append((i + md_inline_match.start(), "md_inline", md_inline_match))
-            if tool_match: candidates.append((i + tool_match.start(), "tool", tool_match))
-            if obs_match: candidates.append((i + obs_match.start(), "obs", obs_match))
-            if notif_match: candidates.append((i + notif_match.start(), "notif", notif_match))
+                if actual_start > i and text[actual_start] == '\n': actual_start += 1
+                while actual_start < n and text[actual_start] in (' ', '\t'): actual_start += 1
+                candidates.append((actual_start, "md_block", md_block_match))
+            if md_inline_match: candidates.append((md_inline_match.start(), "md_inline", md_inline_match))
+            if tool_match: candidates.append((tool_match.start(), "tool", tool_match))
+            if obs_match: candidates.append((obs_match.start(), "obs", obs_match))
+            if notif_match: candidates.append((notif_match.start(), "notif", notif_match))
+            if think_match: candidates.append((think_match.start(), "think", think_match))
             
             if not candidates:
                 current_text += text[i:]
@@ -330,6 +345,13 @@ class AIResponse(Horizontal):
                 segments.append(("notif", match.group(1), ""))
                 i = open_idx + len(match.group(0))
                 
+            elif kind == "think":
+                if current_text:
+                    segments.append(("text", current_text, ""))
+                    current_text = ""
+                segments.append(("think", match.group(1), ""))
+                i = open_idx + len(match.group(0))
+                
             elif kind == "tool":
                 tag_start = open_idx
                 line_start = text.rfind("\n", 0, tag_start) + 1
@@ -347,11 +369,10 @@ class AIResponse(Horizontal):
                 attrs = match.group("attrs") or ""
                 after_open = open_idx + len(match.group(0))
                 
-                close_match = re.search(rf'</{re.escape(tag)}>', text[after_open:], flags=re.IGNORECASE)
+                close_match = re.compile(rf'</{re.escape(tag)}>', flags=re.IGNORECASE).search(text, after_open)
                 if close_match:
-                    inner_end = after_open + close_match.start()
-                    inner = text[after_open:inner_end]
-                    i = after_open + close_match.end()
+                    inner = text[after_open:close_match.start()]
+                    i = close_match.end()
                 else:
                     inner = text[after_open:]
                     i = n
@@ -375,6 +396,8 @@ class AIResponse(Horizontal):
                         body_content = re.sub(r'^```[a-zA-Z0-9]*\n', '', body_content)
                         body_content = re.sub(r'\n```$', '', body_content)
                     if body_content.strip(): body = f"\n\n{rich_escape(body_content.strip())}"
+                elif inner.strip():
+                    body = f"\n{rich_escape(inner.strip())}"
 
                 segments.append(("tool", f"{tool_title(tag, attrs, inner)}{body}", ""))
 
@@ -472,11 +495,21 @@ class AIResponse(Horizontal):
         return table
 
     def update_content(self, text: str) -> None:
-        if self._thinking_active:
-            self.stop_thinking_placeholder()
-        
+        if not hasattr(self, "msg_content"):
+            return
+            
         is_error = "Runtime LLM Error:" in text
-        segments = [(k, c, l) for k, c, l in self._parse_stream_segments(text) if k in ("code", "obs", "notif") or c.strip() or c == "\n"]
+        segments = [(k, c, l) for k, c, l in self._parse_stream_segments(text) if k in ("code", "obs", "notif", "think") or c.strip() or c == "\n"]
+        
+        # Cek apakah respon utama (non-think) sudah dimulai
+        has_real_response = any(k in ("text", "code", "obs", "notif", "tool") and (c.strip() or k != "text") for k, c, l in segments)
+        if has_real_response and self._thinking_active:
+            self.stop_thinking_placeholder()
+            
+        if self._thinking_active:
+            # Tetap tampilkan placeholder di akhir jika masih aktif
+            segments.append(("thinking_inline", "", ""))
+            
         signature = tuple(segments)
         if getattr(self, "_last_signature", None) == signature: return
         self._last_signature = signature
@@ -485,21 +518,56 @@ class AIResponse(Horizontal):
         if next_layout != self._segment_layout:
             self.msg_content.remove_children()
             self._segment_widgets = []; self._segment_layout = next_layout
+            icon_drawn = False
             for k, _, _ in segments:
-                if k == "text": widget = Static("", markup=True)
-                elif k in ("notif", "tool", "obs"): widget = Static("", classes="tool-box", markup=True)
-                else: widget = Static("", classes="tool-box", markup=False)
-                self.msg_content.mount(widget)
-                self._segment_widgets.append(widget)
+                if k == "think":
+                    widget = ThinkBlock()
+                    self.msg_content.mount(widget)
+                    self._segment_widgets.append(widget)
+                elif k == "thinking_inline":
+                    widget = Static("", classes="thinking-placeholder", markup=True)
+                    wrapper = Horizontal(
+                        Static("◈  ", classes="ai-icon"),
+                        Vertical(widget, classes="ai-content"),
+                        classes="ai-response-part"
+                    )
+                    self.msg_content.mount(wrapper)
+                    self._segment_widgets.append(widget)
+                else:
+                    if k == "text": widget = Static("", markup=True)
+                    elif k in ("notif", "tool", "obs"): widget = Static("", classes="tool-box", markup=True)
+                    else: widget = Static("", classes="tool-box", markup=False)
+                    
+                    icon_str = "◈  " if not icon_drawn else "   "
+                    icon_class = "ai-icon" if not icon_drawn else "ai-icon-hidden"
+                    icon_drawn = True
+                    
+                    wrapper = Horizontal(
+                        Static(icon_str, classes=icon_class),
+                        Vertical(widget, classes="ai-content"),
+                        classes="ai-response-part"
+                    )
+                    self.msg_content.mount(wrapper)
+                    self._segment_widgets.append(widget)
 
         for idx, (kind, content, language) in enumerate(segments):
             widget = self._segment_widgets[idx]
+            if kind == "thinking_inline":
+                phrase = self._get_thinking_phrase()
+                visible_phrase = phrase[:self._thinking_visible_chars] if self._thinking_visible_chars else ""
+                if len(visible_phrase) < len(phrase):
+                    shimmer = f"[#7b6b9a]{rich_escape(visible_phrase)}[/#7b6b9a]"
+                else:
+                    shimmer = self._render_shimmer_text(visible_phrase, self._thinking_frame)
+                widget.update(shimmer)
+                continue
+                
             clean_content = content
             if kind == "text":
-                if idx + 1 < len(segments) and segments[idx + 1][0] in ("code", "tool", "obs"): clean_content = clean_content.rstrip("\n")
-                if idx > 0 and segments[idx - 1][0] in ("code", "tool", "obs"): clean_content = clean_content.lstrip("\n")
+                if idx + 1 < len(segments) and segments[idx + 1][0] in ("code", "tool", "obs", "think", "thinking_inline"): clean_content = clean_content.rstrip("\n")
+                if idx > 0 and segments[idx - 1][0] in ("code", "tool", "obs", "think"): clean_content = clean_content.lstrip("\n")
                 widget.display = bool(clean_content.strip())
-            elif kind in ("code", "tool", "obs") and idx == len(segments) - 1: clean_content = clean_content.rstrip("\n")
+            elif kind in ("code", "tool", "obs", "think") and idx == len(segments) - 1: clean_content = clean_content.rstrip("\n")
 
             if not widget.display:
                 continue
@@ -507,6 +575,7 @@ class AIResponse(Horizontal):
             if kind == "code" and language: widget.update(f"[{rich_escape(language)}]\n{clean_content}")
             elif kind == "obs": widget.update(clean_content) # Markup hasil tool
             elif kind == "notif": widget.update(clean_content)
+            elif kind == "think": widget.update(clean_content)
             elif kind == "tool":
                 try:
                     widget.update(Text.from_markup(clean_content))
