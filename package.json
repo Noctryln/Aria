@@ -1,0 +1,11 @@
+{
+  "name": "aria-minecraft-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mineflayer bridge for Aria",
+  "dependencies": {
+    "mineflayer": "^4.24.0",
+    "minecraft-data": "^3.82.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
