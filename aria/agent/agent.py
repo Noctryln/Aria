@@ -2,6 +2,7 @@ from textual.widgets import Static
 
 from aria.integrations.github import AriaGithubMixin
 from aria.integrations.web_search import AriaWebSearchMixin
+from aria.integrations.minecraft import AriaMinecraftMixin
 from aria.llm.base import LLMChat
 from aria.tools.executor import AriaToolExecutorMixin
 from aria.tools.registry import AriaToolRegistryMixin
@@ -11,6 +12,7 @@ class AriaAgentMixin(
     AriaToolRegistryMixin,
     AriaGithubMixin,
     AriaWebSearchMixin,
+    AriaMinecraftMixin,
 ):
     def _submit_to_chat(self, text: str, is_system_obs: bool = False, attachments: dict = None) -> None:
         if attachments is None:

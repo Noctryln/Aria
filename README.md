@@ -518,3 +518,39 @@ Aria is best understood as a terminal execution agent with a chat interface, not
 - the system remains extensible without re-growing into a monolith
 
 If you want a terminal AI agent that can read, plan, edit, validate, search, execute, and recover inside a real workspace with visible control flow, this repository is built for that job.
+
+## Planning Docs
+
+- `docs/minecraft_survival_migration_plan.md`: blueprint migrasi Aria dari TUI ke embodied Minecraft survival runtime.
+
+## Minecraft Runtime (Experimental)
+
+Aria now includes an experimental Minecraft bridge powered by Mineflayer.
+
+### Setup
+
+```bash
+npm install
+```
+
+### New tool tags
+
+- `<mc_connect host="localhost" port="25565" version="1.21.11" username="Aria"></mc_connect>`
+- `<mc_chat>halo</mc_chat>`
+- `<mc_observe></mc_observe>`
+- `<mc_control forward="true" sprint="true"></mc_control>`
+- `<mc_look yaw="0.0" pitch="0.0"></mc_look>`
+- `<mc_stop></mc_stop>`
+
+Bridge script location: `aria/integrations/minecraft_bridge.js`.
+- `<mc_inventory></mc_inventory>`
+- `<mc_events limit="100"></mc_events>`
+- `<mc_act kind="attack_nearest"></mc_act>`
+- `<mc_act kind="dig_look" maxDistance="5"></mc_act>`
+- `<mc_act kind="equip" itemName="shield" destination="off-hand"></mc_act>`
+- `<mc_move x="10" y="64" z="-20" range="2"></mc_move>`
+- `<mc_follow username="Steve" range="2"></mc_follow>`
+- `<mc_policy autoCombat="true" autoEat="true" followPlayer="Steve"></mc_policy>`
+- `<mc_tick></mc_tick>`
+- `<mc_goal goal="gather_wood"></mc_goal>`
+- `<mc_strategy_tick></mc_strategy_tick>`

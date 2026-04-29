@@ -1,6 +1,6 @@
 import re
 
-TOOL_NAME_PATTERN = r'search_workspace|search_image|find_file|check_syntax|web_search|run_?cmd|fetch_url|github_actions|github_search|github_issue|github_repo|github_file|github_pr|mkdir|read|edit|write|search|ls|rm'
+TOOL_NAME_PATTERN = r'search_workspace|search_image|find_file|check_syntax|web_search|run_?cmd|fetch_url|github_actions|github_search|github_issue|github_repo|github_file|github_pr|mkdir|read|edit|write|search|ls|rm|mc_connect|mc_chat|mc_observe|mc_control|mc_look|mc_stop|mc_act|mc_inventory|mc_events|mc_move|mc_follow|mc_policy|mc_tick|mc_goal|mc_strategy_tick'
 TOOL_OPEN_PATTERN = re.compile(rf'<(?P<tag>{TOOL_NAME_PATTERN})(?P<attrs>[^>]*)>', re.IGNORECASE)
 
 class AriaToolRegistryMixin:

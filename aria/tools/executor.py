@@ -566,6 +566,148 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                         tool_outputs.append(f"[RM {path}] -> Error: {e}")
                         is_success = False
 
+
+            elif tag == 'mc_connect':
+                host = re.search(r"host=['\"]([^'\"]+)['\"]", attrs)
+                port = re.search(r"port=['\"]([^'\"]+)['\"]", attrs)
+                version = re.search(r"version=['\"]([^'\"]+)['\"]", attrs)
+                username = re.search(r"username=['\"]([^'\"]+)['\"]", attrs)
+                resp = self._mc_call('connect', {
+                    'host': host.group(1) if host else 'localhost',
+                    'port': int(port.group(1)) if port else 25565,
+                    'version': version.group(1) if version else '1.21.11',
+                    'username': username.group(1) if username else 'Aria',
+                })
+                tool_outputs.append(f"[MC_CONNECT] -> {resp}")
+                add_notif("[bold #71d1d1]Minecraft connect request sent.[/bold #71d1d1]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_chat':
+                msg = inner.strip()
+                resp = self._mc_call('chat', {'message': msg})
+                tool_outputs.append(f"[MC_CHAT] -> {resp}")
+                add_notif(f"[bold]Aria chat:[/bold] [#d1a662]{rich_escape(msg[:120])}[/#d1a662]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_observe':
+                resp = self._mc_call('observe', {})
+                tool_outputs.append(f"[MC_OBSERVE] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                add_notif("[bold]Aria observing Minecraft environment.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_control':
+                flags = {}
+                for key in ('forward','back','left','right','jump','sprint','sneak'):
+                    m = re.search(rf"{key}=['\"]([^'\"]+)['\"]", attrs)
+                    if m:
+                        flags[key] = m.group(1).lower() in ('1','true','yes','on')
+                resp = self._mc_call('control', flags)
+                tool_outputs.append(f"[MC_CONTROL] -> {resp}")
+                add_notif("[bold]Aria control updated.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_look':
+                yaw_m = re.search(r"yaw=['\"]([^'\"]+)['\"]", attrs)
+                pitch_m = re.search(r"pitch=['\"]([^'\"]+)['\"]", attrs)
+                resp = self._mc_call('look', {
+                    'yaw': float(yaw_m.group(1)) if yaw_m else 0.0,
+                    'pitch': float(pitch_m.group(1)) if pitch_m else 0.0,
+                    'force': True,
+                })
+                tool_outputs.append(f"[MC_LOOK] -> {resp}")
+                add_notif("[bold]Aria look direction changed.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_stop':
+                resp = self._mc_call('stop', {})
+                tool_outputs.append(f"[MC_STOP] -> {resp}")
+                add_notif("[bold]Aria movement stopped.[/bold]")
+                is_success = bool(resp.get('ok'))
+            elif tag == 'mc_inventory':
+                resp = self._mc_call('inventory', {})
+                tool_outputs.append(f"[MC_INVENTORY] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                add_notif("[bold]Aria inventory snapshot fetched.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_events':
+                lm = re.search(r"limit=['\"]([^'\"]+)['\"]", attrs)
+                limit = int(lm.group(1)) if lm else 50
+                resp = self._mc_call('events', {'limit': limit})
+                tool_outputs.append(f"[MC_EVENTS] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                add_notif("[bold]Aria event stream fetched.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_act':
+                km = re.search(r"kind=['\"]([^'\"]+)['\"]", attrs)
+                kind = km.group(1) if km else inner.strip()
+                payload = {'kind': kind}
+                for key in ('itemName','destination','maxDistance'):
+                    m = re.search(rf"{key}=['\"]([^'\"]+)['\"]", attrs)
+                    if m:
+                        payload[key] = m.group(1)
+                resp = self._mc_call('act', payload)
+                tool_outputs.append(f"[MC_ACT {kind}] -> {resp}")
+                add_notif(f"[bold]Aria mc_act:[/bold] [#d1a662]{rich_escape(kind)}[/#d1a662]")
+                is_success = bool(resp.get('ok'))
+
+
+            elif tag == 'mc_move':
+                x = re.search(r"x=['\"]([^'\"]+)['\"]", attrs)
+                y = re.search(r"y=['\"]([^'\"]+)['\"]", attrs)
+                z = re.search(r"z=['\"]([^'\"]+)['\"]", attrs)
+                rg = re.search(r"range=['\"]([^'\"]+)['\"]", attrs)
+                if not (x and y and z):
+                    tool_outputs.append("[MC_MOVE] -> {'ok': False, 'error': 'x/y/z required'}")
+                    is_success = False
+                else:
+                    resp = self._mc_call('move_to', {'x': float(x.group(1)), 'y': float(y.group(1)), 'z': float(z.group(1)), 'range': float(rg.group(1)) if rg else 1})
+                    tool_outputs.append(f"[MC_MOVE] -> {resp}")
+                    add_notif("[bold]Aria pathfinding to target.[/bold]")
+                    is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_follow':
+                um = re.search(r"username=['\"]([^'\"]+)['\"]", attrs)
+                username = um.group(1) if um else inner.strip()
+                rg = re.search(r"range=['\"]([^'\"]+)['\"]", attrs)
+                resp = self._mc_call('follow', {'username': username, 'range': float(rg.group(1)) if rg else 2})
+                tool_outputs.append(f"[MC_FOLLOW] -> {resp}")
+                add_notif(f"[bold]Aria following:[/bold] [#d1a662]{rich_escape(username)}[/#d1a662]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_policy':
+                payload = {}
+                for key in ('autoCombat','autoEat','followPlayer'):
+                    m = re.search(rf"{key}=['\"]([^'\"]+)['\"]", attrs)
+                    if m:
+                        if key in ('autoCombat','autoEat'):
+                            payload[key] = m.group(1).lower() in ('1','true','yes','on')
+                        else:
+                            payload[key] = m.group(1)
+                resp = self._mc_call('set_policy', payload)
+                tool_outputs.append(f"[MC_POLICY] -> {resp}")
+                add_notif("[bold]Aria policy updated.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_tick':
+                resp = self._mc_call('autonomy_tick', {})
+                tool_outputs.append(f"[MC_TICK] -> {resp}")
+                add_notif("[bold]Aria autonomy tick executed.[/bold]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_goal':
+                gm = re.search(r"goal=['\"]([^'\"]+)['\"]", attrs)
+                goal_name = gm.group(1) if gm else inner.strip() or 'survive'
+                resp = self._mc_call('set_goal', {'goal': goal_name})
+                tool_outputs.append(f"[MC_GOAL] -> {resp}")
+                add_notif(f"[bold]Aria strategic goal:[/bold] [#d1a662]{rich_escape(goal_name)}[/#d1a662]")
+                is_success = bool(resp.get('ok'))
+
+            elif tag == 'mc_strategy_tick':
+                resp = self._mc_call('strategic_tick', {})
+                tool_outputs.append(f"[MC_STRATEGY_TICK] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                add_notif("[bold]Aria strategic tick executed.[/bold]")
+                is_success = bool(resp.get('ok'))
+
             elif tag in ('search', 'search_workspace'):
                 query = inner.strip().strip("'").strip('"'); res = f"[SEARCH_WORKSPACE '{query}'] ->\n"
                 try:
