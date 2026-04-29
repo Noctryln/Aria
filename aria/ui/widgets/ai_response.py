@@ -397,7 +397,11 @@ class AIResponse(Vertical):
                         body_content = re.sub(r'\n```$', '', body_content)
                     if body_content.strip(): body = f"\n\n{rich_escape(body_content.strip())}"
                 elif inner.strip():
-                    body = f"\n{rich_escape(inner.strip())}"
+                    clean_inner = inner.strip()
+                    if "\n" not in clean_inner and len(clean_inner) < 60:
+                        body = f" {rich_escape(clean_inner)}"
+                    else:
+                        body = f"\n{rich_escape(clean_inner)}"
 
                 segments.append(("tool", f"{tool_title(tag, attrs, inner)}{body}", ""))
 

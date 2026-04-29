@@ -129,7 +129,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
     def on_mount(self) -> None:
         self._thread_id = threading.get_ident()
         self.start_time = time.time()
-        self._refresh_separator(); self._refresh_status(); self._render_idle_bar(); self.query_one("#input-box").focus()
+        self._refresh_status(); self._render_idle_bar(); self.query_one("#input-box").focus()
         if self.llm.history:
             self._render_history()
         if getattr(self, "_startup_notification", None):
@@ -169,8 +169,6 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 log.mount(resp)
                 resp.finalize_animated_content(content.strip())
         log.scroll_end(animate=False)
-
-    def on_resize(self) -> None: self._refresh_separator()
 
     def _refresh_separator(self) -> None: self.query_one("#separator").update("─" * max(self.app.size.width, 10))
 

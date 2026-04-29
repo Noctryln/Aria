@@ -36,12 +36,11 @@ MarkdownFence { border: round #3d2d5a; background: #0c0c0c; width: 100%; margin:
 .perm-btn.-active { border: none; background: transparent; color: #d1a662; }
 .thinking-placeholder { color: #9d8ec0; text-style: italic; }
 #cmd-suggestions { display: none; height: auto; background: #0c0c0c; border-top: solid #3d2d5a; padding: 0; margin: 0; }
-.cmd-suggestion-item { height: 1; padding: 0 2; color: #7b6b9a; background: #0c0c0c; }
-.cmd-suggestion-item.--highlight { color: #0c0c0c; background: #3d2d5a; text-style: bold; }
+.cmd-suggestion-item { height: 1; padding: 0 2; color: #c6bbd8; background: #0c0c0c; }
+.cmd-suggestion-item.--highlight { color: #0c0c0c; background: #71d1d1; text-style: bold; }
 .cmd-suggestion-item.--highlight Static { color: #71d1d1; }
 #session-dialog { display: none; height: auto; max-height: 7; background: #0c0c0c; border-top: solid #3d2d5a; padding: 0; margin: 0; }
-.session-item { height: 1; padding: 0 2; color: #7b6b9a; background: #0c0c0c; }
-.session-item.--highlight { color: #0c0c0c; background: #3d2d5a; text-style: bold; }
+.session-item { height: 1; padding: 0 2; color: #c6bbd8; background: #0c0c0c; }
+.session-item.--highlight { color: #0c0c0c; background: #71d1d1; text-style: bold; }
 .session-item.--highlight Static { color: #71d1d1; }
 """
-

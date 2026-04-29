@@ -1,8 +1,15 @@
+from aria.utils.time import get_current_datetime_indonesian
+
 class LLMChatStreamMixin:
     def _effective_system_prompt(self, enable_thinking=True) -> str:
         limit = 500 if self.backend == "cloud" else 50
         think_status = "YA" if enable_thinking else "TIDAK"
-        mode_info = f"\n\n[INFO SISTEM]\nSaat ini kamu berjalan di mode: {self.backend.upper()}.\nBatas maksimal baris untuk membaca file per chunk adalah: {limit} baris.\nSesuaikan urutan chunk membacamu dengan batas ini (misal 1-{limit}, {limit+1}-{limit*2}, dst).\nStatus /think: {think_status}"
+        
+        mode_info = f"\n\n[INFO SISTEM]\nSaat ini kamu berjalan di mode: {self.backend.upper()}."
+        if self.backend == "cloud":
+            mode_info += f"\nWaktu sekarang: {get_current_datetime_indonesian()}"
+        
+        mode_info += f"\nBatas maksimal baris untuk membaca file per chunk adalah: {limit} baris.\nSesuaikan urutan chunk membacamu dengan batas ini (misal 1-{limit}, {limit+1}-{limit*2}, dst).\nStatus /think: {think_status}"
         
         think_info = ""
         if self.backend == "cloud" and enable_thinking:
