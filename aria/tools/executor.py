@@ -566,6 +566,146 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                         tool_outputs.append(f"[RM {path}] -> Error: {e}")
                         is_success = False
 
+
+            elif tag.startswith('mc_'):
+                is_success = False
+                
+                if tag == 'mc_connect':
+                    hm = re.search(r"host=['\"]([^'\"]+)['\"]", attrs)
+                    pm = re.search(r"port=['\"]([^'\"]+)['\"]", attrs)
+                    vm = re.search(r"version=['\"]([^'\"]+)['\"]", attrs)
+                    um = re.search(r"username=['\"]([^'\"]+)['\"]", attrs)
+                    payload = {
+                        'host': hm.group(1) if hm else 'localhost',
+                        'port': int(pm.group(1)) if pm else 25565,
+                        'version': vm.group(1) if vm else '1.21.11',
+                        'username': um.group(1) if um else 'Aria'
+                    }
+                    resp = self._mc_call('connect', payload, timeout=30.0)
+                    if resp.get('ok'):
+                        tool_outputs.append(f"[MC_CONNECT] Berhasil tersambung ke {payload['host']}:{payload['port']} sebagai {payload['username']}")
+                        add_notif(f"[bold]Aria bergabung ke Minecraft[/bold] ({payload['host']})")
+                        is_success = True
+                    else:
+                        tool_outputs.append(f"[MC_CONNECT] Gagal: {resp.get('error')}\nstderr: {resp.get('stderr_tail', '')}")
+                        add_notif("[bold red]Gagal masuk ke Minecraft[/bold red]")
+                
+                elif tag == 'mc_chat':
+                    msg = inner.strip()
+                    resp = self._mc_call('chat', {'message': msg})
+                    tool_outputs.append(f"[MC_CHAT] -> {resp}")
+                    add_notif(f"[bold]Aria chat:[/bold] [#d1a662]{rich_escape(msg)}[/#d1a662]")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_observe':
+                    rm = re.search(r"radius\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                    tm = re.search(r"target\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                    r = int(rm.group(1) or rm.group(2)) if rm else 8
+                    target = tm.group(1) or tm.group(2) if tm else None
+                    resp = self._mc_call('observe', {'radius': r, 'targets': [target] if target else []})
+                    tool_outputs.append(f"[MC_OBSERVE] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                    add_notif("[bold]Aria mengamati sekitar[/bold]")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_inventory':
+                    resp = self._mc_call('inventory', {})
+                    tool_outputs.append(f"[MC_INVENTORY] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                    add_notif("[bold]Aria memeriksa inventory[/bold]")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_events':
+                    lm = re.search(r"limit\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                    limit = int(lm.group(1) or lm.group(2)) if lm else 100
+                    resp = self._mc_call('events', {'limit': limit})
+                    tool_outputs.append(f"[MC_EVENTS] -> {json.dumps(resp, ensure_ascii=False)[:5000]}")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_stop':
+                    resp = self._mc_call('stop', {})
+                    tool_outputs.append(f"[MC_STOP] -> {resp}")
+                    add_notif("[bold]Aria berhenti[/bold]")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_policy':
+                    payload = {}
+                    for k in ['autoCombat','autoEat']:
+                        m = re.search(rf"{k}=['\"]([^'\"]+)['\"]", attrs, re.I)
+                        if m:
+                            val = m.group(1).lower()
+                            payload[k] = (val == 'true')
+                    resp = self._mc_call('set_policy', payload)
+                    tool_outputs.append(f"[MC_POLICY] -> {resp}")
+                    add_notif("[bold]Aria mengubah policy otonom.[/bold]")
+                    is_success = bool(resp.get('ok'))
+
+                elif tag == 'mc_autopilot':
+                    em = re.search(r"enabled=['\"]([^'\"]+)['\"]", attrs)
+                    im = re.search(r"interval_ms=['\"]([^'\"]+)['\"]", attrs)
+                    payload = {}
+                    if em: payload['enabled'] = (em.group(1).lower() == 'true')
+                    if im: payload['intervalMs'] = int(im.group(1))
+                    resp = self._mc_call('set_autopilot', payload)
+                    tool_outputs.append(f"[MC_AUTOPILOT] -> {resp}")
+                    add_notif(f"[bold]Aria autopilot:[/bold] {'[green]ON[/green]' if payload.get('enabled', True) else '[red]OFF[/red]'}")
+                    is_success = bool(resp.get('ok'))
+                
+                elif tag == 'mc_act':
+                    # Parse all possible attributes into payload
+                    # Common: kind, target, x, y, z, count, range, itemName, maxDistance
+                    # Improved robust parsing
+                    payload = {}
+                    for attr in ['kind', 'target', 'itemName', 'destination', 'direction']:
+                        m = re.search(rf"{attr}\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                        if m: payload[attr] = m.group(1) or m.group(2)
+                    
+                    for attr in ['x', 'y', 'z', 'range', 'maxDistance']:
+                        m = re.search(rf"{attr}\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                        if m:
+                            try: payload[attr] = float(m.group(1) or m.group(2))
+                            except: pass
+                    
+                    for attr in ['count', 'depth']:
+                        m = re.search(rf"{attr}\s*=\s*(?:['\"]([^'\"]+)['\"]|([^\s>]+))", attrs, re.I)
+                        if m:
+                            try: payload[attr] = int(m.group(1) or m.group(2))
+                            except: pass
+
+                    if 'kind' not in payload and inner.strip():
+                        # Check if inner is a JSON list for multi-place
+                        inner_clean = inner.strip()
+                        if inner_clean.startswith('[') and inner_clean.endswith(']'):
+                            try:
+                                blocks = json.loads(inner_clean)
+                                if isinstance(blocks, list):
+                                    payload['blocks'] = blocks
+                                    if not payload.get('kind'): payload['kind'] = 'place'
+                            except:
+                                payload['kind'] = inner_clean
+                        else:
+                            payload['kind'] = inner_clean
+
+                    kind = payload.get('kind', 'unknown')
+                    
+                    # Ensure Multi-Place or ItemName mapping is correct for Node side
+                    if kind == 'place':
+                        if 'target' in payload and 'itemName' not in payload:
+                            payload['itemName'] = payload.pop('target')
+                    
+                    resp = self._mc_call('act', payload)
+                    tool_outputs.append(f"[MC_ACT] -> {json.dumps(resp, ensure_ascii=False)}")
+
+                    target_str = payload.get('target') or payload.get('itemName') or ""
+                    if 'blocks' in payload:
+                        add_notif(f"[bold]Aria membangun struktur ({len(payload['blocks'])} blok)[/bold]")
+                    else:
+                        add_notif(f"[bold]Aria otonom ({kind}):[/bold] [#d1a662]{rich_escape(target_str)}[/#d1a662]")
+                    is_success = bool(resp.get('ok'))
+                    if not is_success:
+                        add_notif(f"[bold red]Gagal ({kind}): {resp.get('error')}[/bold red]")                
+                else:
+                    tool_outputs.append(f"[MINECRAFT_TOOL] Legacy/Unknown tag '{tag}' diabaikan.")
+                    is_success = False
+    
             elif tag in ('search', 'search_workspace'):
                 query = inner.strip().strip("'").strip('"'); res = f"[SEARCH_WORKSPACE '{query}'] ->\n"
                 try:
@@ -644,7 +784,7 @@ def _process_tools(self, text: str, resp_widget) -> tuple[list[str], str]:
                         is_success = False
                     else:
                         try:
-                            import urllib.request, urllib.parse, json
+                            import urllib.request, urllib.parse
                             import requests
                             
                             if img_mode == "serpapi":

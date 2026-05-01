@@ -7,7 +7,7 @@ DEFAULT_CONFIG = {
     "backend": "local",
     "local_model_path": DEFAULT_MODEL_PATH,
     "lora_adapter_path": "",
-    "google_api_key": "",
+    "google_api_key": "", # Bisa berupa string tunggal, string dipisah koma, atau JSON list
     "cloud_model": "gemma-4-26b-a4b-it",
     "serpapi_key": "",
     "github_oauth_token": "",

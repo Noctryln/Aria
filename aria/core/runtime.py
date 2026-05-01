@@ -1,7 +1,7 @@
 import os
 
 DEFAULT_CTX         = 16384
-DEFAULT_CLOUD_CTX   = 131072  # 128k token
+DEFAULT_CLOUD_CTX   = 200000  # 200k token (Stay within 256k-262k limit)
 DEFAULT_MAX_TOKENS  = 16384
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_TOP_P       = 0.95

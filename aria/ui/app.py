@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 import time
@@ -83,9 +84,11 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         self._session_items: list[dict] = []
         self._session_index: int = -1
         self._branches: list[dict] = []
-        self._branch_counter: int = 0
+        self._branch_counter = 0
         self._pending_file_snapshot: dict[str, str] = {}
         self._turn_file_diffs: list[dict] = []
+        self._mc_brain_data: list[dict] = [] # Stores last 10 snapshots
+        self._mc_last_poll_time = 0
 
     def action_interrupt(self) -> None:
         if self.query_one("#session-dialog").display:
@@ -136,6 +139,88 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
             log = self.query_one("#chat-log")
             log.mount(Static(self._startup_notification, classes="tool-box", markup=True))
             log.scroll_end(animate=False)
+        
+        self.set_interval(4.0, self._mc_poll_events_task)
+
+    def _on_mc_event(self, payload: dict) -> None:
+        if not hasattr(self, "_last_mc_event_times"):
+            self._last_mc_event_times = {}
+
+        etype = payload.get('event')
+        data = payload.get('data', {})
+        log = self.query_one("#chat-log")
+
+        # Cooldown check for system-triggered responses
+        now = time.time()
+        last_time = self._last_mc_event_times.get(etype, 0)
+        cooldown = 3.0 # 3 seconds cooldown per event type for auto-response
+        can_trigger = (now - last_time) > cooldown
+
+        if etype == 'chat':
+            username = data.get('username', '')
+            message = data.get('message', '')
+            mc_uname = getattr(self, "mc_username", "Aria")
+            if username == mc_uname or message.startswith(f"<{mc_uname}>") or message.startswith(f"[{mc_uname}]"): 
+                return
+
+            msg_text = f"[bold #71d1d1][MC] {username}:[/bold #71d1d1] {message}"
+            self.call_from_thread(lambda m=msg_text: log.mount(Static(m, classes="tool-box", markup=True)))
+
+            if can_trigger:
+                self._last_mc_event_times[etype] = now
+                # Immediate response trigger
+                self.call_from_thread(lambda m=message, u=username: self.handle_input_submission(
+                    f"<system_observation>Pemain bernama {u} berkata: '{m}'. Gunakan data Brain terbaru untuk membalas.</system_observation>"
+                ))
+
+        elif etype == 'error':
+            msg = data.get('message', 'Unknown Error')
+            severity = data.get('severity', 'error')
+            color = "#f472b6" if severity == 'error' else "#fbbf24"
+            msg_text = f"[bold {color}][MC {severity.upper()}] {msg}[/bold {color}]"
+            self.call_from_thread(lambda m=msg_text: log.mount(Static(m, classes="tool-box", markup=True)))
+
+        elif etype == 'death':
+            self.call_from_thread(lambda: log.mount(Static("[bold #f472b6][MC] Aria died![/bold #f472b6]", classes="tool-box", markup=True)))
+            if can_trigger:
+                self._last_mc_event_times[etype] = now
+                self.handle_input_submission("<system_observation>YOU DIED. Analisis data Brain terakhir untuk mencari penyebab dan lokasi kematian.</system_observation>")
+
+        elif etype == 'kicked':
+             reason = data.get('reason', 'Unknown')
+             self.call_from_thread(lambda r=reason: log.mount(Static(f"[bold #f472b6][MC] Kicked: {r}[/bold #f472b6]", classes="tool-box", markup=True)))
+
+        self.call_from_thread(log.scroll_end)
+
+
+    @work(thread=True)
+    def _mc_poll_events_task(self) -> None:
+        if not hasattr(self, "_mc_proc") or self._mc_proc is None:
+            return
+        
+        if getattr(self, "_mc_polling_active", False):
+            return
+        self._mc_polling_active = True
+        
+        try:
+            # ARIA BRAIN: Sequential perception gathering
+            # Reduced frequency and radius for background polling to save CPU/TUI lag
+            obs = self._mc_call('observe', {'radius': 8})
+            inv = self._mc_call('inventory', {})
+            
+            if obs.get('ok') and inv.get('ok'):
+                snapshot = {
+                    'timestamp': time.time(),
+                    'observation': obs,
+                    'inventory': inv,
+                    'events': list(self._mc_events[-15:]) # Use real-time events buffer
+                }
+                
+                self._mc_brain_data.append(snapshot)
+                if len(self._mc_brain_data) > 3:
+                    self._mc_brain_data.pop(0)
+        finally:
+            self._mc_polling_active = False
 
     def _render_history(self) -> None:
         log = self.query_one("#chat-log")
@@ -380,7 +465,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 event.text_area.border_title = "" if text else "Ketik pesan untuk Aria..."
 
         if text.startswith("/"):
-            all_cmds = ["/speech", "/think", "/debug", "/lora", "/local", "/cloud", "/github", "/clear", "/reset", "/branch", "/session", "/quit"]
+            all_cmds = ["/speech", "/think", "/debug", "/lora", "/local", "/cloud", "/github", "/clear", "/reset", "/branch", "/session", "/quit", "/dumplog"]
             matches = [c for c in all_cmds if c.startswith(text.lower())]
             # Reset index jika daftar matches berubah
             if matches != self._suggestion_items:
@@ -460,6 +545,20 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
             self._reset_input_placeholder()
             if self._loading_timer is None: self._render_idle_bar()
             return
+        if lower_text == "/dumplog":
+            import json, os
+            dump_file = "aria_log_dump.json"
+            try:
+                with open(dump_file, "w", encoding="utf-8") as f:
+                    json.dump(self.llm.history, f, indent=2, ensure_ascii=False)
+                log = self.query_one("#chat-log")
+                log.mount(Static(f"[bold #71d1d1]Log berhasil disimpan ke {os.path.abspath(dump_file)}[/bold #71d1d1]", classes="tool-box", markup=True))
+                log.scroll_end(animate=False)
+            except Exception as e:
+                log = self.query_one("#chat-log")
+                log.mount(Static(f"[bold red]Gagal menyimpan log: {e}[/bold red]", classes="tool-box", markup=True))
+                log.scroll_end(animate=False)
+            return
         if lower_text.startswith("/reset"):
             self._reset_context_window()
             return
@@ -497,7 +596,9 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 log.mount(Static("[bold #f472b6]Usage:[/bold #f472b6] /restore <id>  (lihat id dari /branch)", classes="tool-box"))
                 log.scroll_end(animate=False)
             return
-        self._submit_to_chat(text, attachments=attachments)
+
+        is_sys = text.startswith("<system_observation>") or text.startswith("[Sistem:")
+        self._submit_to_chat(text, is_system_obs=is_sys, attachments=attachments)
 
     def _animate_user_message(self, widget: Static, text: str) -> None:
         rendered_chars = 0
@@ -583,21 +684,53 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
 
             self._start_loading("Executing tools..."); self.tool_permission_event.set()
 
+    def _inject_brain_data(self) -> None:
+        """Injeksi data persepsi terbaru dari Aria Brain ke Aria Body (hanya simpan snapshot terbaru di history)."""
+        if not self._mc_brain_data:
+            return
+
+        # Bersihkan snapshot lama dari history agar tidak membengkakkan token context
+        with self.llm.history_lock:
+            new_history = []
+            for m in self.llm.history:
+                if not m.get("content", "").startswith("<aria_brain_snapshot"):
+                    new_history.append(m)
+            
+            # Gunakan load_history agar total token dihitung ulang dan session cloud di-recreate
+            self.llm.load_history(new_history)
+
+            latest = self._mc_brain_data[-1]
+            brain_obs = (
+                f"<aria_brain_snapshot timestamp=\"{latest['timestamp']}\">\n"
+                f"OBSERVATION: {json.dumps(latest['observation'], ensure_ascii=False)}\n"
+                f"INVENTORY: {json.dumps(latest['inventory'], ensure_ascii=False)}\n"
+                f"RECENT_EVENTS: {json.dumps(latest['events'], ensure_ascii=False)}\n"
+                f"</aria_brain_snapshot>"
+            )
+            self.llm.add_message("user", brain_obs)
+
     def _save_session_sync(self) -> None:
         from aria.agent.memory import save_current_session
-        user_msgs = [
-            m["content"] for m in self.llm.history 
-            if m["role"] == "user" 
-            and not m["content"].startswith("<system_observation>") 
-            and not m["content"].startswith("[Sistem:")
-        ]
-        last_input = user_msgs[-1] if user_msgs else ""
-        import re
-        last_input = re.sub(r'<system_observation>.*?(?:</system_observation>|$)', '', last_input, flags=re.DOTALL).strip()
-        save_current_session(self.session_id, LAUNCH_DIR, self.llm.history, len(self.llm.history), last_input)
+        with self.llm.history_lock:
+            user_msgs = [
+                m["content"] for m in self.llm.history 
+                if m["role"] == "user" 
+                and not m["content"].startswith("<system_observation>") 
+                and not m["content"].startswith("[Sistem:")
+            ]
+            last_input = user_msgs[-1] if user_msgs else ""
+            import re
+            last_input = re.sub(r'<system_observation>.*?(?:</system_observation>|$)', '', last_input, flags=re.DOTALL).strip()
+            save_current_session(self.session_id, LAUNCH_DIR, self.llm.history, len(self.llm.history), last_input)
 
     @work(thread=True)
     def _run_stream(self) -> None:
+        self._run_stream_body()
+
+    def _run_stream_body(self) -> None:
+        # Sebelum Aria Body mulai berpikir, ambil snapshot terbaru dari Aria Brain
+        self.call_from_thread(self._inject_brain_data)
+
         last_user_msg = ""
         for m in reversed(self.llm.history):
             if m['role'] == 'user' and not m['content'].startswith('<system_observation>'):
@@ -610,7 +743,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
             sum(1 for kw in _complex_keywords if kw in last_user_msg.lower()) >= 1 and
             any(w in last_user_msg.lower() for w in ['file', 'kode', 'code', 'fungsi', 'function', 'semua', 'all'])
         )
-        if _is_complex:
+        if _is_complex and "PLANNING MODE:" not in last_user_msg:
             plan_injection = (
                 "<system_observation>\n"
                 "PLANNING MODE: Task ini terdeteksi kompleks.\n"
@@ -625,25 +758,37 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 if self.llm.history[i]['role'] == 'user' and not self.llm.history[i]['content'].startswith('<system_observation>'):
                     self.llm.history[i] = dict(self.llm.history[i])
                     self.llm.history[i]['content'] += plan_injection
+                    # Sync change to cloud session if active
+                    if self.llm.backend == "cloud":
+                        self.llm.cloud_chat = self.llm._create_cloud_chat(self.llm.system_prompt, label="planning_mode", history_data=self.llm.history)
                     break
         self.call_from_thread(self._start_loading, "Aria berpikir...")
         widgets = {}
 
         def setup_msg():
+            widgets['header'] = Static("Thinking...", classes="think-header")
+            widgets['header'].display = False
+            widgets['think'] = ThinkBlock("")
+            widgets['think'].display = False
             widgets['resp'] = AIResponse()
             widgets['resp'].display = True
             log = self.query_one("#chat-log")
-            log.mount(widgets['resp'])
+            log.mount(widgets['header'], widgets['think'], widgets['resp'])
             widgets['resp'].start_thinking_placeholder()
             log.scroll_end(animate=False)
 
         self.call_from_thread(setup_msg)
-        buf = ""; resp_text = ""; last_update_time = 0.0; last_scroll_time = 0.0
+        phase = "pre"; buf = ""; think_text = ""; resp_text = ""; last_update_time = 0.0; last_scroll_time = 0.0
         _streaming_started = False
 
-        def update_ui(r_text: str):
-            if 'resp' not in widgets: return
-            clean_r = r_text.strip()
+        def update_ui(t_text: str, r_text: str, p: str):
+            if 'header' not in widgets: return
+            clean_t = t_text.strip()
+            if clean_t and self.show_thinking:
+                widgets['header'].display = True; widgets['think'].display = True; widgets['think'].update(clean_t)
+            else:
+                widgets['header'].display = False; widgets['think'].display = False
+            clean_r = r_text.strip() 
             if clean_r:
                 widgets['resp'].display = True
                 if self.llm.backend == "cloud":
@@ -652,11 +797,15 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                         resp_widget._content_animation_visible = clean_r
                     resp_widget._content_animation_target = clean_r
                     if resp_widget._content_animation_timer is None:
+                        resp_widget.stop_thinking_placeholder()
                         resp_widget._content_animation_timer = resp_widget.set_interval(
                             AriaApp.USER_STREAM_INTERVAL, resp_widget._tick_content_animation
                         )
                 else:
                     widgets['resp'].update_content(clean_r)
+            elif p in ("pre", "think"):
+                widgets['resp'].display = True
+                widgets['resp'].start_thinking_placeholder()
             else:
                 widgets['resp'].stop_content_animation()
                 widgets['resp'].stop_thinking_placeholder()
@@ -670,7 +819,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         def trigger_update(force=False):
             nonlocal last_update_time; now = time.time()
             if force or (now - last_update_time > 0.05):
-                self.call_from_thread(update_ui, resp_text); last_update_time = now
+                self.call_from_thread(update_ui, think_text, resp_text, phase); last_update_time = now
 
         self._cancel_stream = False
         stream_error = None
@@ -681,52 +830,54 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                     # Fase 2: streaming dimulai → ubah loading ke "Aria Mengetik..."
                     self.call_from_thread(self._start_loading, "Aria Mengetik...")
                 if self._cancel_stream:
-                    resp_text += "\n\n*[Dihentikan]*"
+                    if phase in ("pre", "think"): think_text += "\n\n*[Dihentikan]*"; phase = "response" 
+                    else: resp_text += "\n\n*[Dihentikan]*"
                     break
 
-                # Update status berdasarkan keberadaan tag think yang belum ditutup
-                is_thinking = False
-                if self.show_thinking:
-                    open_count = (resp_text + buf).count("<think>")
-                    close_count = (resp_text + buf).count("</think>")
-                    is_thinking = open_count > close_count
-                
-                target_msg = "Aria Berpikir..." if is_thinking else "Aria Mengetik..."
-                if getattr(self, "loading_msg", "") != target_msg:
-                    self.call_from_thread(self._start_loading, target_msg)
-
-                # Jika show_thinking False, hapus tag think on the fly (jika ada)
-                if not self.show_thinking:
-                    buf += raw_token.replace("\r", "")
-                    # Sangat disederhanakan: Hapus tag think
-                    idx = buf.find("<think>")
-                    if idx != -1:
-                        idx_close = buf.find("</think>", idx)
+                buf += raw_token.replace("\r", "")
+                while True:
+                    if phase == "pre":
+                        idx = buf.find("<think>")
+                        if idx != -1: resp_text += buf[:idx]; buf = buf[idx + 7:]; phase = "think"; continue
+                        partial = next((i for i in range(1, 8) if buf.endswith("<think>"[:i])), 0)
+                        if partial: resp_text += buf[:-partial]; buf = buf[-partial:]
+                        else: resp_text += buf; buf = ""; phase = "response"
+                        trigger_update(); break
+                    elif phase == "think":
+                        idx_close = buf.find("</think>")
                         if idx_close != -1:
-                            buf = buf[:idx] + buf[idx_close + 8:]
-                        else:
-                            # Masih menunggu penutup tag, simpan di buf
-                            pass
-                    if "<think>" not in buf:
-                        resp_text += buf; buf = ""
-                else:
-                    resp_text += raw_token.replace("\r", "")
-
-                trigger_update()
+                            think_text += buf[:idx_close]; buf = buf[idx_close + 8:]; phase = "response"
+                            self.call_from_thread(self._stop_loading); continue
+                        partial = next((i for i in range(1, 9) if buf.endswith("</think>"[:i])), 0)
+                        if partial: think_text += buf[:-partial]; buf = buf[-partial:]
+                        else: think_text += buf; buf = ""
+                        trigger_update(); break
+                    elif phase == "response":
+                        if buf: resp_text += buf; buf = ""; trigger_update() 
+                        break
         except Exception as e:
             stream_error = e
 
-        if buf and not self.show_thinking and "<think>" not in buf:
-            resp_text += buf
-        elif buf and self.show_thinking:
-            resp_text += buf
-
+        if phase == "think" and buf: think_text += buf
+        elif phase == "response" and buf: resp_text += buf
         if stream_error is not None and not self._cancel_stream:
             resp_text += f"\n\n*[Runtime LLM Error: {stream_error}]*"
-        if self._cancel_stream and not resp_text.strip():
+        if self._cancel_stream and not think_text.strip() and not resp_text.strip():
             resp_text = "*[Dihentikan sebelum output tampil]*"
 
         trigger_update(force=True)
+        
+        # Penanganan Response Kosong (API Error) secara otomatis
+        if not resp_text.strip() and not think_text.strip() and not self._cancel_stream:
+            empty_info = getattr(self.llm, "_last_empty_response_info", None)
+            if empty_info:
+                reason, attempt = empty_info
+                self.llm._last_empty_response_info = None
+                error_obs = f"<system_observation>\nAria, kamu terkena api error (finish_reason={reason}). Sebelumnya kamu/user ingin melakukan {attempt}. Silakan lanjutkan.\n</system_observation>"
+                self.call_from_thread(self._submit_to_chat, error_obs, True)
+                self.call_from_thread(self._stop_loading)
+                return
+
         if self.llm.backend == "cloud":
             self.call_from_thread(widgets['resp'].finalize_animated_content, resp_text.strip())
         self.total_output_tokens += self.llm.count_tokens(resp_text)
@@ -744,7 +895,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
                 if not self.tool_permission_granted:
                     denied_resp_text = self._decorate_tool_tags_with_status(resp_text, "denied")
                     self.llm.add_message("assistant", denied_resp_text)
-                    self.call_from_thread(update_ui, denied_resp_text)
+                    self.call_from_thread(update_ui, think_text, denied_resp_text, phase)
                     self.call_from_thread(self._stop_loading)
                     self.call_from_thread(self._submit_to_chat, "<system_observation>\nERROR: Permission Denied by User.\nSTATUS TOOL: Izin ditolak oleh user.\n</system_observation>", True)
                     return
@@ -762,7 +913,7 @@ class AriaApp(AriaTextMixin, AriaSystemMixin, AriaAppLifecycleMixin, AriaAgentMi
         
         if self.llm.backend == "cloud":
             self.call_from_thread(widgets['resp'].finalize_animated_content, full_combined_resp)
-        self.call_from_thread(update_ui, full_combined_resp)
+        self.call_from_thread(update_ui, think_text, full_combined_resp, phase)
         self.call_from_thread(self._stop_loading)
 
         if tool_outputs:

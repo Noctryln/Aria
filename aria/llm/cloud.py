@@ -3,17 +3,45 @@ import time
 
 class LLMChatCloudMixin:
     def _init_cloud_backend(self) -> None:
-        self.cloud_api_key = (self.config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+        raw_key = self.config.get("google_api_key") or os.environ.get("GOOGLE_API_KEY") or ""
+        if isinstance(raw_key, list):
+            self.cloud_api_keys = [k.strip() for k in raw_key if k.strip()]
+        else:
+            self.cloud_api_keys = [k.strip() for k in str(raw_key).split(",") if k.strip()]
+
         self.cloud_model = self.config.get("cloud_model").strip()
-        if not self.cloud_api_key:
+        if not self.cloud_api_keys:
             raise RuntimeError("Google AI Studio API key belum diatur. Isi 'google_api_key' di config.json atau env GOOGLE_API_KEY.")
+        
         from google import genai
         from google.genai import types
         self._genai = genai
         self._genai_types = types
-        self.cloud_client = genai.Client(api_key=self.cloud_api_key)
+        
+        # Initialize client pool
+        self._cloud_clients = [genai.Client(api_key=key) for key in self.cloud_api_keys]
+        self._current_client_idx = 0
+        self.cloud_client = self._cloud_clients[0]
         self.cloud_chat = self._create_cloud_chat(self.system_prompt, label="main")
         self.llm = self
+
+    def _rotate_cloud_client(self):
+        if len(self._cloud_clients) > 1:
+            self._current_client_idx = (self._current_client_idx + 1) % len(self._cloud_clients)
+            self.cloud_client = self._cloud_clients[self._current_client_idx]
+            
+            # Reset rate limit tracking for the new key
+            if hasattr(self, "_cloud_request_times"):
+                with self._cloud_request_lock:
+                    self._cloud_request_times.clear()
+
+            # Recreate chat session for the new client with existing history
+            history_data = []
+            if hasattr(self, "history"):
+                history_data = self.history
+            self.cloud_chat = self._create_cloud_chat(self.system_prompt, label="rotated", history_data=history_data)
+            return True
+        return False
 
     def _emit_debug(self, title: str, payload: str) -> None:
         if callable(self.debug_hook):
@@ -166,7 +194,9 @@ class LLMChatCloudMixin:
         while True:
             try:
                 self._enforce_cloud_rate_limit(skip_min_interval=skip_min_interval)
-                response = target_chat.send_message_stream(
+                # Ensure we use the latest client/chat in case of rotation
+                current_chat = chat or self.cloud_chat
+                response = current_chat.send_message_stream(
                     message_payload,
                     config=dynamic_config,
                 )
@@ -182,12 +212,35 @@ class LLMChatCloudMixin:
                         got_any = True
                         yield chunk_text
                 if not got_any and not self._abort_event.is_set():
-                    yield f"\n[System: Response empty (finish_reason={last_finish_reason}). Continuing automatically...]\n"
+                    # Identifikasi apa yang sedang dicoba dilakukan sebelumnya
+                    prev_attempt = "melakukan aksi"
+                    for m in reversed(messages):
+                        c = m.get("content") or ""
+                        if m.get("role") == "model" and "<" in c:
+                            import re
+                            tm = re.search(r'<(mc_[^ >/]+)', c)
+                            if tm:
+                                tag = tm.group(1)
+                                if tag == "mc_act":
+                                    km = re.search(r'kind=["\']([^"\']+)["\']', c); trm = re.search(r'target=["\']([^"\']+)["\']', c)
+                                    prev_attempt = f"aksi {km.group(1) if km else ''} {trm.group(1) if trm else ''}".strip()
+                                else: prev_attempt = f"tool {tag}"
+                                break
+                        elif m.get("role") == "user":
+                            prev_attempt = f"instruksi '{c[:40]}...'" if len(c) > 40 else f"instruksi '{c}'"
+                            break
+                    self._last_empty_response_info = (last_finish_reason, prev_attempt)
+                    return
                 self.is_waiting_rate_limit = False
                 return
             except Exception as e:
                 err_msg = str(e)
                 if ("429" in err_msg or "Resource has been exhausted" in err_msg or "quota" in err_msg.lower()) and not self._abort_event.is_set():
+                    self._emit_debug("RATE LIMIT", f"API Key {self._current_client_idx} exhausted. Rotating...")
+                    if self._rotate_cloud_client():
+                        self._emit_debug("ROTATION SUCCESS", f"Switched to API Key {self._current_client_idx}. Retrying...")
+                        continue # Retry with new key immediately
+                    
                     self.is_waiting_rate_limit = True
                     retry_match = re.search(r'retry in ([\d\.]+)s', err_msg)
                     wait_time = float(retry_match.group(1)) if retry_match else 10.0

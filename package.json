@@ -1,0 +1,17 @@
+{
+  "name": "aria-minecraft-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mineflayer bridge for Aria",
+  "dependencies": {
+    "express": "^5.2.1",
+    "mineflayer": "^4.37.0",
+    "mineflayer-armor-manager": "^2.0.1",
+    "mineflayer-collectblock": "^1.6.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-pvp": "^1.3.2",
+    "mineflayer-tool": "^1.2.0",
+    "minecraft-data": "^3.82.0",
+    "vec3": "^0.1.10"
+  }
+}

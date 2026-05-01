@@ -3,10 +3,10 @@ from textual.containers import Vertical
 from textual.widgets import Static
 
 class ThinkBlock(Vertical):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, content: str = "", **kwargs):
+        super().__init__(**kwargs)
         self.header = Static("Thinking...", classes="think-header")
-        self.body = Static(classes="think-body")
+        self.body = Static(content, classes="think-body")
 
     def compose(self):
         yield self.header
